@@ -122,6 +122,8 @@ You have two tasks for a football-related question.
 Task 1:
 Decide whether fresh internet search is required.
 - Return true for current-season stats, fixtures, results, injuries, transfers, live updates, recent quotes, or breaking news.
+- Return true for future participation questions such as whether a player will play in an upcoming tournament.
+- If the question is a follow-up with pronouns like he, his, they, or the club, resolve them from the provided previous user questions.
 - Return false for stable rules, definitions, or evergreen history.
 
 Task 2:
@@ -130,6 +132,7 @@ If search is required, generate one concise keyword-rich Google-style query.
 - Convert "last season" to "{previous_season}".
 - Convert "recently" or similar freshness terms to "{today}" when useful.
 - Prefer specific player names, clubs, competitions, and metrics like goals, assists, xG, form, table, injury.
+- For follow-ups, include the resolved player, club, competition, or team name. Do not output generic queries like "player recent injuries form".
 - Keep it short and direct.
 - If search is not required, set query to an empty string.
 

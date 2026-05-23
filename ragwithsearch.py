@@ -440,6 +440,7 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
 
     print("Formatted query:", formatted_query)
     retrieval_query = formatted_query or query
+    relevance_query = formatted_query or query
     _log_query("retrieval_input", retrieval_query)
 
 
@@ -552,7 +553,7 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
         print(f"Page chunks for {ctx['url']}: {len(page_chunks)}")
         # wayback_chunks = chunk_article(wayback_text)
         print(f"Page chunks for {ctx['url']}: {len(page_chunks)}")
-        top_chunks = rank_chunks_bm25(page_chunks, query, top_k=5)
+        top_chunks = rank_chunks_bm25(page_chunks, relevance_query, top_k=5)
         print(f"Top chunks for {ctx['url']}: {len(top_chunks)}")
         # print(top_chunks[0])
         top_chunks_str = '\n\n'.join(top_chunks)
@@ -606,7 +607,12 @@ def _heuristic_query_classifier(user_question: str) -> dict:
     ]
 
     if any(marker in lowered for marker in fresh_markers):
-        normalized = re.sub(r"[^a-z0-9\s-]", " ", question.lower())
+        normalized = re.sub(
+            r"previous user questions,? for resolving pronouns and follow-ups:|current question:",
+            " ",
+            question.lower(),
+        )
+        normalized = re.sub(r"[^a-z0-9\s-]", " ", normalized)
         normalized = " ".join(normalized.split())
         return {
             "search_required": True,
@@ -641,6 +647,49 @@ def _extract_primary_question(raw_query: str) -> str:
         question = question.split("{'_action':", 1)[0].strip()
 
     return question
+
+
+def _strip_error_noise(text: str) -> str:
+    text = (text or "").strip()
+    for marker in (
+        "Traceback (most recent call last)",
+        "{'_action':",
+        "[stacktrace in console]",
+    ):
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+    return text
+
+
+def _extract_previous_user_queries(raw_query: str) -> list[str]:
+    text = raw_query or ""
+    if "Previous Query:" not in text:
+        return []
+
+    previous_block = text.split("Previous Query:", 1)[1]
+    if "Main query to be answered:" in previous_block:
+        previous_block = previous_block.split("Main query to be answered:", 1)[0]
+
+    lines = [
+        _strip_error_noise(line)
+        for line in previous_block.splitlines()
+        if _strip_error_noise(line)
+    ]
+    return lines[-4:]
+
+
+def _build_contextual_question(raw_query: str) -> str:
+    primary_question = _extract_primary_question(raw_query)
+    previous_questions = _extract_previous_user_queries(raw_query)
+    if not previous_questions:
+        return primary_question
+
+    previous_text = "\n".join(f"- {question}" for question in previous_questions)
+    return (
+        "Previous user questions, for resolving pronouns and follow-ups:\n"
+        f"{previous_text}\n\n"
+        f"Current question: {primary_question}"
+    )
 
 
 def _best_effort_json(text: str) -> dict:
@@ -678,7 +727,7 @@ def classify_and_build_query(user_question: str) -> dict:
         "query": "keyword-rich one-line football query ('' if not needed)"
       }
     """
-    user_question = _extract_primary_question(user_question)
+    user_question = _strip_error_noise(user_question)
     today = date.today()
     heuristic_result = _heuristic_query_classifier(user_question)
 
@@ -711,7 +760,9 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
     print("query loading")
     search_required = False
     primary_question = _extract_primary_question(query)
+    contextual_question = _build_contextual_question(query)
     _log_query("primary_question", primary_question)
+    _log_query("contextual_question", contextual_question)
 
     if not primary_question:
         safe_fallback = fallback_context or ""
@@ -719,7 +770,7 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
         return safe_fallback, False, ""
 
     if formatted_query is None:
-        result = classify_and_build_query(primary_question)
+        result = classify_and_build_query(contextual_question)
         print(result)
         formatted_query = result["query"].strip()
         _log_query("classifier_result", result)
@@ -727,6 +778,7 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
         search_required = search_required or result["search_required"]
     else:
         _log_query("reused_formatted_query", formatted_query)
+        search_required = bool(formatted_query)
 
 
     print("Formatted Query:", formatted_query)

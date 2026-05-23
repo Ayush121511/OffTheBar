@@ -45,17 +45,26 @@ MODELS: List[str] = [
 ]
 
 ROUTER = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
+_hf_token_shape_logged = False
 
 def _require_env(name: str) -> str:
-    value = os.getenv(name)
+    value = os.getenv(name, "").strip()
     if not value:
         raise ValueError(f"{name} environment variable is not set.")
     return value
 
 
 def _hf_headers():
+    global _hf_token_shape_logged
+    token = _require_env('HF_TOKEN')
+    if not _hf_token_shape_logged:
+        print(
+            "[OffTheBar config] HF_TOKEN loaded "
+            f"length={len(token)} prefix={token[:3]!r} suffix={token[-4:]!r}"
+        )
+        _hf_token_shape_logged = True
     return {
-        "Authorization": f"Bearer {_require_env('HF_TOKEN')}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
@@ -71,6 +80,11 @@ def _embed(texts: List[str], max_retries_per_model: int = 2, backoff_seconds: fl
                     json={"inputs": texts},
                     timeout=5   # <-- timeout reduced to 5 seconds
                 )
+                if resp.status_code == 401:
+                    print(
+                        "[OffTheBar config] Hugging Face returned 401. "
+                        f"Response: {resp.text[:200]}"
+                    )
                 resp.raise_for_status()
                 out = resp.json()
                 # If shaped like [[vector], [vector], ...], return as-is
