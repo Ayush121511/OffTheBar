@@ -436,6 +436,9 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
 
     print("Formatted query:", formatted_query)
 
+    if not search_required and not formatted_query:
+        return fallback_context or "", False, formatted_query
+
 
     pinecone_contexts = []
 
@@ -483,6 +486,7 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     search_results = []
+    results = {"results": []}
     print("Searching for news context...")
     print("Formatted query:", formatted_query)
     try:
