@@ -431,12 +431,18 @@ def bm25_score(query, document):
 today = date.today()
 from crawl4AI import crawl_page
 
+def _log_query(label, value):
+    print(f"[OffTheBar query] {label}: {value!r}")
+
+
 def formatted_prompting(query,formatted_query, player_query, team_query, fallback_context = None,search_required=None):
     context = False
 
     print("Formatted query:", formatted_query)
+    _log_query("retrieval_input", formatted_query)
 
     if not search_required and not formatted_query:
+        _log_query("retrieval_skipped", "no search required and no formatted query")
         return fallback_context or "", False, formatted_query
 
 
@@ -489,6 +495,7 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
     results = {"results": []}
     print("Searching for news context...")
     print("Formatted query:", formatted_query)
+    _log_query("searx_query", formatted_query)
     try:
         params = {
             "q": formatted_query,
@@ -684,20 +691,27 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
     print("query loading")
     search_required = False
     primary_question = _extract_primary_question(query)
+    _log_query("primary_question", primary_question)
 
     if not primary_question:
         safe_fallback = fallback_context or ""
+        _log_query("primary_question_skipped", "empty question")
         return safe_fallback, False, ""
 
     if formatted_query is None:
         result = classify_and_build_query(primary_question)
         print(result)
         formatted_query = result["query"].strip()
+        _log_query("classifier_result", result)
 
         search_required = search_required or result["search_required"]
+    else:
+        _log_query("reused_formatted_query", formatted_query)
 
 
     print("Formatted Query:", formatted_query)
+    _log_query("final_formatted_query", formatted_query)
+    _log_query("search_required", search_required)
 
     player_query = "player query"
 
