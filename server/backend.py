@@ -498,6 +498,7 @@ class Backend_Api:
                         + prompt["content"],
                         news_content,
                         formatted_query,
+                        force_search=True,
                     )
                     if isinstance(latest_result, tuple):
                         news_content_latest = latest_result[0]

@@ -442,6 +442,8 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
     retrieval_query = formatted_query or query
     relevance_query = formatted_query or query
     _log_query("retrieval_input", retrieval_query)
+    _log_query("fallback_context_supplied", fallback_context is not None)
+    _log_query("web_search_requested", bool(search_required))
 
 
     pinecone_contexts = []
@@ -454,6 +456,7 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
             matches = search_pinecone(retrieval_query, top_k=4)
         except Exception as exc:
             print(f"Pinecone search failed: {exc}")
+            _log_query("pinecone_failed", str(exc))
             matches = []
         pinecone_fallback = ""
         if matches:
@@ -489,9 +492,11 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
 
                 fallback_context = "\n\n".join(pinecone_contexts)
                 return fallback_context, (True and search_required), formatted_query
+    else:
+        _log_query("pinecone_skipped", "fallback context was supplied")
 
     if not search_required:
-        _log_query("web_search_skipped", "search not required after knowledge base lookup")
+        _log_query("web_search_skipped", "search_required is false")
         return fallback_context or "", False, formatted_query
 
     url = "https://asia-south1-runofplay.cloudfunctions.net/searx_proxy"
@@ -755,7 +760,7 @@ def classify_and_build_query(user_question: str) -> dict:
         print("Gemini query classification failed, falling back to heuristic classification.")
         return heuristic_result
 
-def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
+def ask_from_llm(token,query, fallback_context=None, formatted_query = None, force_search=False):
     print("Hello query")
     print("query loading")
     search_required = False
@@ -775,10 +780,11 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None):
         formatted_query = result["query"].strip()
         _log_query("classifier_result", result)
 
-        search_required = search_required or result["search_required"]
+        search_required = force_search or search_required or result["search_required"]
     else:
         _log_query("reused_formatted_query", formatted_query)
-        search_required = bool(formatted_query)
+        search_required = force_search or bool(formatted_query)
+    _log_query("force_search", force_search)
 
 
     print("Formatted Query:", formatted_query)
