@@ -439,11 +439,8 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
     context = False
 
     print("Formatted query:", formatted_query)
-    _log_query("retrieval_input", formatted_query)
-
-    if not search_required and not formatted_query:
-        _log_query("retrieval_skipped", "no search required and no formatted query")
-        return fallback_context or "", False, formatted_query
+    retrieval_query = formatted_query or query
+    _log_query("retrieval_input", retrieval_query)
 
 
     pinecone_contexts = []
@@ -451,7 +448,12 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
 
     if fallback_context is None:
         # Query Pinecone index for top 3 matches
-        matches = search_pinecone(formatted_query, top_k=4)
+        try:
+            _log_query("pinecone_query", retrieval_query)
+            matches = search_pinecone(retrieval_query, top_k=4)
+        except Exception as exc:
+            print(f"Pinecone search failed: {exc}")
+            matches = []
         pinecone_fallback = ""
         if matches:
             top_match = matches[0]
@@ -486,6 +488,10 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
 
                 fallback_context = "\n\n".join(pinecone_contexts)
                 return fallback_context, (True and search_required), formatted_query
+
+    if not search_required:
+        _log_query("web_search_skipped", "search not required after knowledge base lookup")
+        return fallback_context or "", False, formatted_query
 
     url = "https://asia-south1-runofplay.cloudfunctions.net/searx_proxy"
     headers = {
@@ -588,7 +594,9 @@ def _heuristic_query_classifier(user_question: str) -> dict:
         "injury", "injuries", "transfer", "transfers", "rumour", "rumor",
         "news", "update", "updates", "table", "standings", "form",
         "score", "result", "results", "live", "quote", "quotes",
-        "contract", "renewal",
+        "contract", "renewal", "world cup", "2026", "squad", "call up",
+        "called up", "retire", "retirement", "available", "availability",
+        "will ",
     ]
     evergreen_markers = [
         "favourite", "favorite", "best ever", "greatest ever", "of all time",
@@ -674,13 +682,25 @@ def classify_and_build_query(user_question: str) -> dict:
     today = date.today()
     heuristic_result = _heuristic_query_classifier(user_question)
 
-    if not heuristic_result["search_required"]:
+    if (
+        not heuristic_result["search_required"]
+        and "defaulted to no-search" not in heuristic_result["reason"]
+    ):
         return heuristic_result
 
     prompt = build_search_classifier_prompt(user_question, today)
     try:
         response = _get_gemini_model().generate_content(prompt)
-        return _best_effort_json(response.text)
+        parsed = _best_effort_json(response.text)
+        if heuristic_result["search_required"] and not parsed.get("search_required"):
+            parsed["search_required"] = True
+            parsed["reason"] = (
+                f"{parsed.get('reason', '').strip()} "
+                f"Heuristic freshness signal also matched."
+            ).strip()
+        if parsed.get("search_required") and not parsed.get("query"):
+            parsed["query"] = heuristic_result["query"] or user_question
+        return parsed
     except Exception as exc:
         print(exc)
         print("Gemini query classification failed, falling back to heuristic classification.")
