@@ -4,7 +4,7 @@ Football analysis backend API with streaming Gemini responses.
 """
 
 from __future__ import annotations
-
+from config_env import require_env
 import os
 import random
 from datetime import datetime

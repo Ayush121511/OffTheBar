@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from json import load
+import config_env
 
 BASE_DIR = Path(__file__).resolve().parent
 

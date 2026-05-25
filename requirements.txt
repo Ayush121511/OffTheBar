@@ -13,3 +13,4 @@ feedparser
 crawl4ai
 statsbombpy
 pandas
+python-dotenv

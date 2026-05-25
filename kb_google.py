@@ -1,38 +1,6 @@
-# from google.oauth2 import service_account
-# from googleapiclient.discovery import build
-
-# # Load credentials
-# SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents']
-# SERVICE_ACCOUNT_FILE = 'offthebar-35d6179fa394.json'  # path to your JSON key file
-
-# creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-# drive_service = build('drive', 'v3', credentials=creds)
-# docs_service = build('docs', 'v1', credentials=creds)
-
-# # Get all Google Docs files in a specific folder
-# def list_google_docs_with_dates(folder_id):
-#     results = drive_service.files().list(
-#         q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document'",
-#         fields="files(id, name, createdTime, modifiedTime)"
-#     ).execute()
-#     return results.get('files', [])
-
-# Extract plain text from a Google Doc
-# def extract_text_from_doc(doc_id):
-#     doc = docs_service.documents().get(documentId=doc_id).execute()
-#     text = ""
-#     for element in doc.get("body", {}).get("content", []):
-#         text_run = element.get("paragraph", {}).get("elements", [])
-#         for run in text_run:
-#             if "textRun" in run:
-#                 text += run["textRun"]["content"]
-#     return text
+from config_env import require_env
 print("Importing SentenceTransformer and tqdm...")
-# from sentence_transformers import SentenceTransformer
-# from tqdm import tqdm
-# print("Loading SentenceTransformer model...")
-# model = SentenceTransformer("all-MiniLM-L6-v2")
-# print("Model loaded successfully!")
+
 
 import os, time, requests
 from typing import List
@@ -47,16 +15,9 @@ MODELS: List[str] = [
 ROUTER = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
 _hf_token_shape_logged = False
 
-def _require_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"{name} environment variable is not set.")
-    return value
-
-
 def _hf_headers():
     global _hf_token_shape_logged
-    token = _require_env('HF_TOKEN')
+    token = require_env('HF_TOKEN')
     if not _hf_token_shape_logged:
         print(
             "[OffTheBar config] HF_TOKEN loaded "
@@ -121,7 +82,7 @@ def _get_index():
         return index
 
     pc = Pinecone(
-        api_key=_require_env("PINECONE_API_KEY"),
+        api_key=require_env("PINECONE_API_KEY"),
         proxy_url=proxy_url,
     )
     print("Pinecone connected")
@@ -133,7 +94,7 @@ def _get_index():
             metric='cosine',
             spec=ServerlessSpec(
                 cloud=os.getenv("PINECONE_CLOUD", "aws"),
-                region=os.getenv("PINECONE_REGION", "us-east-1"),
+                region=require_env("PINECONE_REGION"),
             )
         )
 

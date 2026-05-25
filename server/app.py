@@ -8,28 +8,27 @@ from google.oauth2 import id_token
 import requests
 from flask_cors import CORS
 from server.backend import conversation_endpoint
+from config_env import require_env
 
 app = Flask(__name__, template_folder='./../client/html')
 
-app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.urandom(32)
+app.secret_key = require_env("FLASK_SECRET_KEY") or os.urandom(32)
 
 CORS(app, origins=["*"])
 
 
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-SECRETS_DIR = os.getenv("OFFTHEBAR_SECRETS_DIR", "")
+GOOGLE_CLIENT_ID = require_env("GOOGLE_CLIENT_ID")
+SECRETS_DIR = require_env("OFFTHEBAR_SECRETS_DIR")
 default_client_secrets_file = (
     os.path.join(SECRETS_DIR, "google-oauth-client-secret.json")
     if SECRETS_DIR
     else ""
 )
-client_secrets_file = os.getenv(
-    "GOOGLE_OAUTH_CLIENT_SECRETS_FILE",
-    default_client_secrets_file,
+client_secrets_file = require_env(
+    "GOOGLE_OAUTH_CLIENT_SECRETS_FILE"
 )
-google_redirect_uri = os.getenv(
+google_redirect_uri = require_env(
     "GOOGLE_REDIRECT_URI",
-    "https://offthebar.pythonanywhere.com/callback",
 )
 
 flow = None

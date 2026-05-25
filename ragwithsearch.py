@@ -1,4 +1,5 @@
 import os
+from config_env import require_env
 
 error_messages = [
     "🥅 Server missed the penalty! Try again later.",
@@ -33,16 +34,9 @@ from nltk.tokenize import sent_tokenize
 print("NLTK loaded.")
 
 
-def _require_env(name):
-    value = os.getenv(name)
-    if not value:
-        raise ValueError(f"{name} environment variable is not set.")
-    return value
-
-
 def _jina_headers():
     return {
-        "Authorization": f"Bearer {_require_env('JINA_API_KEY')}",
+        "Authorization": f"Bearer {require_env('JINA_API_KEY')}",
         "X-Engine": "direct",
         "X-Timeout": "10s"
     }

@@ -1,6 +1,7 @@
 import os
 from threading import Lock
 from typing import List, Optional
+from config_env import require_env
 
 import google.generativeai as genai
 
@@ -11,7 +12,7 @@ _gemini_key_index = 0
 def _collect_gemini_api_keys() -> List[str]:
     keys: List[str] = []
 
-    combined = os.getenv("GEMINI_API_KEYS", "")
+    combined = require_env("GEMINI_API_KEYS")
     if combined:
         keys.extend(part.strip() for part in combined.split(",") if part.strip())
 
@@ -59,6 +60,16 @@ def next_gemini_api_key() -> str:
 
 def build_gemini_model(model_name: str, safety_settings: Optional[list] = None):
     api_key = next_gemini_api_key()
+    masked_key = (
+        api_key[:8] + "..." + api_key[-4:]
+        if len(api_key) > 12
+        else "INVALID_KEY_FORMAT"
+    )
+
+    print(
+        f"[OffTheBar Gemini] Using API key "
+        f"#{current_index + 1}: {masked_key}"
+    )
     genai.configure(api_key=api_key)
     if safety_settings is None:
         return genai.GenerativeModel(model_name)
