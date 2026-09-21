@@ -7,3 +7,4 @@ rank-bm25
 nltk
 crawl4ai
 python-dotenv
+gunicorn
