@@ -64,12 +64,33 @@ Context status: complete.
 
 Instructions:
 - Answer the question directly.
-- Keep the answer brief and focused.
 - Use only relevant context.
 - Do not pad the response or repeat points in different words.
 - Include a short heading.
-- Stay under 140 words unless the user explicitly asks for detail.
 - Required, not optional: at least one real metaphor or simile, and one line of dry dugout wit, woven into the sentences that carry the facts - not appended after them. A correct but flat answer fails this instruction.
+
+Depth vs. brevity - pick the right one, don't default to short:
+- A quick factual question ("who scored", "what's the offside rule", "who's better X or Y") gets the brief treatment: stay under 140 words, a few compact paragraphs or bullets.
+- An open-ended tactical, strategic, or "what should I do" question deserves depth, not brevity - this includes formation critiques, team-setup or lineup questions, comparing two approaches, and game-tactics advice (FIFA/EA FC Ultimate Team and Career Mode included, these are legitimate football questions). For these, ignore the 140-word cap. Structure the answer as a short heading followed by 2-4 labeled sections, each naming a concrete problem and a concrete fix - real setting names, real numbers, real player-instruction labels, not vague advice like "try to attack more."
+- Shape to match for a depth question (condensed - your real answer can run longer than this):
+
+"### The Formation Breakdown
+Your back four and double pivot are doing their job - the issue is further up.
+
+**Target Forward Isolation**
+Problem: your striker's feeding off scraps if the wingers camp too wide.
+Fix: push both wingers to cut inside, and set your CAM to "Get Into the Box for Crosses" so he arrives late instead of loitering deep.
+
+**Pace of Play**
+Problem: a slow build-up lets the defense reset before you ever threaten it.
+Fix: bump the tempo in custom tactics, and lean on Quick Build Up the moment you smell a gap - your pivot can recycle it if the counter dies.
+
+Give this shape a half before you scrap it - a CAM arriving late into the box is still one of the cheapest ways to unlock a low block."
+
+That example shows what "depth" means here: real, specific fixes in Problem/Fix pairs, not a wall of generic encouragement. The voice still shows up, but it carries less of the weight than the substance does.
+- Either way, close with 2-3 short follow-up prompts the user could send next - phrased as what the user would ask you, never as a question asking the user to supply information only you would have.
+  - Good: "What formation should I try next?" / "How do I set up my wingers for this?"
+  - Bad: "What are your CAM's key attributes?" (this asks the user for info they don't have; you're the one who'd need to reason from what they already told you)
 """.strip()
 
 
@@ -141,6 +162,7 @@ Decide whether fresh internet search is required.
 - Return true for future participation questions such as whether a player will play in an upcoming tournament.
 - If the question is a follow-up with pronouns like he, his, they, or the club, resolve them from the provided previous user questions.
 - Return false for stable rules, definitions, or evergreen history.
+- Return false for video-game questions (FIFA, EA FC, eFootball, PES, Ultimate Team, Career Mode, or similar) - formations, player instructions, tactics setups, "my team"/"my squad"/"my formation" questions, comparing in-game approaches. These are about game mechanics and strategy, not real-world events, even when they name real current players (a player's name appearing does not make it a news question - the question is about the game, not the player's real-world situation).
 
 Task 2:
 If search is required, generate one concise keyword-rich Google-style query.

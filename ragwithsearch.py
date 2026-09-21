@@ -266,6 +266,22 @@ def _heuristic_query_classifier(user_question: str) -> dict:
     question = user_question.strip()
     lowered = question.lower()
 
+    gaming_markers = [
+        "fifa", "ea fc", "efootball", "pes ", "ultimate team", "career mode",
+        "fut ", "my formation", "my squad", "my team", "player instructions",
+        "custom tactics", "wingback", "wing-back",
+    ]
+    if any(marker in lowered for marker in gaming_markers):
+        # Checked before fresh_markers below: a video-game question about
+        # "my squad" or "transfers" is about game mechanics, not real-world
+        # news, even though it can share vocabulary with a genuine freshness
+        # question - the football-club transfer window isn't what's meant.
+        return {
+            "search_required": False,
+            "reason": "Heuristic fallback detected a video-game tactics/formation question.",
+            "query": "",
+        }
+
     fresh_markers = [
         "latest", "right now", "today", "currently", "recent", "recently",
         "this season", "last match", "next match", "fixture", "fixtures",
