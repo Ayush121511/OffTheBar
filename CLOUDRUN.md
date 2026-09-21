@@ -72,13 +72,60 @@ const API_URL = 'https://offthebar-api-<hash>-<region>.a.run.app/api/chat';
 
 No other change needed — the `fetch()`/streaming logic is host-agnostic.
 
-### 4. (Optional) Scheduled `ingest_kb.py`
+### 4. Scheduled `ingest_kb.py`
 
-PythonAnywhere's Task Scheduler ran this periodically. On Cloud Run, either:
-- Deploy it as a [Cloud Run job](https://cloud.google.com/run/docs/create-jobs)
-  (`gcloud run jobs deploy offthebar-ingest --source . --command python
-  --args ingest_kb.py ...`) and trigger it with Cloud Scheduler, or
-- Keep running it manually / from a local cron for now.
+Live, replacing PythonAnywhere's Task Scheduler entirely. Reuses the same
+image already pushed for `offthebar-api` — no second image to build or
+store — just overrides the container command:
+
+```bash
+gcloud run jobs create offthebar-ingest-kb \
+  --region asia-south1 \
+  --image "asia-south1-docker.pkg.dev/<project>/cloud-run-source-deploy/offthebar-api@<current-sha>" \
+  --command python \
+  --args ingest_kb.py \
+  --memory 1Gi --cpu 1 --task-timeout 900 --max-retries 1 \
+  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1" \
+  --set-secrets "HF_TOKEN=HF_TOKEN:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
+```
+
+Get the current image digest with:
+`gcloud run services describe offthebar-api --region asia-south1 --format="value(spec.template.spec.containers[0].image)"`
+— re-run this and update the job's image (`gcloud run jobs update
+offthebar-ingest-kb --image ...`) whenever `offthebar-api` is redeployed
+from new source, so the ingestion job stays on the same code.
+
+Triggered daily via a dedicated least-privilege service account (only
+`roles/run.invoker` on this one job, nothing else):
+
+```bash
+gcloud iam service-accounts create ingest-kb-scheduler \
+  --display-name="Cloud Scheduler -> offthebar-ingest-kb invoker"
+
+gcloud run jobs add-iam-policy-binding offthebar-ingest-kb \
+  --region asia-south1 \
+  --member="serviceAccount:ingest-kb-scheduler@<project>.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+
+gcloud scheduler jobs create http offthebar-ingest-kb-daily \
+  --location asia-south1 \
+  --schedule="0 4 * * *" \
+  --uri="https://asia-south1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/<project>/jobs/offthebar-ingest-kb:run" \
+  --http-method=POST \
+  --oauth-service-account-email="ingest-kb-scheduler@<project>.iam.gserviceaccount.com" \
+  --time-zone="Etc/UTC"
+```
+
+Cost: negligible. The job's compute (a few minutes of 1 vCPU/1GiB for ~640
+posts) is a small fraction of Cloud Run's monthly free tier, shared with
+`offthebar-api`; Cloud Scheduler's first 3 jobs per billing account are
+free, so this one costs $0 unless other scheduler jobs already exist on the
+account. Verified live: manual `gcloud run jobs execute offthebar-ingest-kb
+--wait` completed successfully, 638 posts fetched, 1,723 vectors upserted
+into Pinecone.
+
+To trigger manually outside the daily schedule:
+`gcloud run jobs execute offthebar-ingest-kb --region asia-south1 --wait`
 
 ## Known limitation carried over from local dev
 
