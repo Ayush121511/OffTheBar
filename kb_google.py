@@ -1,6 +1,4 @@
 from config_env import require_env
-print("Importing SentenceTransformer and tqdm...")
-
 
 import os, time, requests
 from typing import List
@@ -102,60 +100,16 @@ def _get_index():
     index = pc.Index(index_name)
     return index
 
-# Load documents
-# folder_ids = ['1rzb_1wHcb3_p1I7h1La5p-KHBmubik2g','1TaavTQ8fXUheM2nB8wBQ32GhjK78ns8G','1P3YXnV4GOUhIPK-tPHFAuc9ir42ITbLp']
 
-# for folder_id in folder_ids:
-#     docs = list_google_docs_with_dates(folder_id)
-
-#     chunks = []
-#     metadatas = []
-
-#     def split_into_chunks(text, chunk_size=2000):
-#         return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-
-#     for doc in tqdm(docs):
-#         full_text = extract_text_from_doc(doc['id'])
-#         # Simple chunking by paragraph or fixed length
-#         paragraphs = [p.strip() for p in split_into_chunks(full_text) if p.strip()]
-#         for i, para in enumerate(paragraphs):
-#             chunks.append(para)
-#             metadatas.append({
-#         "doc_id": doc['id'],
-#         "doc_name": doc['name'] + f" - {i+1}",
-#         "doc_size": len(para),
-#         "created": doc['createdTime'],
-#         "modified": doc['modifiedTime'],
-#         "chunk": para
-#     })
+def embed_texts(texts: List[str]):
+    """Public entry point for embedding text (used by ingest_kb.py)."""
+    return _embed(texts)
 
 
-# index.delete(
-#         deleteAll=True  )
-    # import uuid
+def get_pinecone_index():
+    """Public entry point for the shared Pinecone index handle (used by ingest_kb.py)."""
+    return _get_index()
 
-    # vectors = []
-    # embeddings = model.encode(chunks)
-
-    # for i, embedding in enumerate(embeddings):
-    #     vectors.append({
-    #         "id": str(uuid.uuid4()),
-    #         "values": embedding.tolist(),
-
-    #         "metadata": metadatas[i]
-    #     })
-
-    # # Batch upserts (max 100 per call)
-    # for i in range(0, len(vectors), 100):
-    #     index.upsert(vectors[i:i+100])
-
-    # stats = index.describe_index_stats()
-    # print(stats)
-
-    # def search_pinecone(query, top_k=3):
-    #     q_vec = model.encode([query])[0]
-    #     results = index.query(vector=q_vec.tolist(), top_k=top_k, include_metadata=True)
-    #     return results['matches']
 
 def search_pinecone(query, top_k=3):
     query_list = [query]

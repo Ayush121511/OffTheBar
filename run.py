@@ -42,6 +42,13 @@ with CONFIG_PATH.open("r") as config_file:
 
 site_config = config['site_config']
 
+# Local dev convenience: FLASK_DEBUG in .env enables Flask's auto-reloader
+# (restarts on code changes) without touching the shared config.json, which
+# is also read in production — debug mode must never be on there.
+_debug_override = os.getenv("FLASK_DEBUG")
+if _debug_override is not None:
+    site_config['debug'] = _debug_override.strip().lower() in ("1", "true", "yes")
+
 site = Website(app)
 for route in site.routes:
     app.add_url_rule(

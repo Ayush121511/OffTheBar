@@ -4,16 +4,14 @@ Football analysis backend API with streaming Gemini responses.
 """
 
 from __future__ import annotations
-from config_env import require_env
-import os
 import random
 from datetime import datetime
-from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 from flask import Response, request, stream_with_context
-from requests import get
-import google.generativeai as genai
+from google.genai import types as genai_types
 
-from gemini_utils import build_gemini_model, get_gemini_api_keys
+from chat_storage import save_chat_turn
+from gemini_utils import call_gemini_with_key_retry, get_gemini_api_keys
 from prompt_templates import (
     build_chat_system_prompt,
     build_complete_context_instruction,
@@ -33,12 +31,42 @@ halftime_phrases = [
     "HALFTIME!!! gathering live updates"
 ]
 
+GEMINI_SAFETY_SETTINGS = [
+    {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+    },
+    {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+    },
+    {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+    },
+    {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+    },
+]
 
-def _require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise ValueError(f"{name} environment variable is not set.")
-    return value
+
+def _build_llm_query(conversation_history: List[Dict[str, str]], latest_question: str) -> str:
+    """
+    Compose the single text blob ask_from_llm expects: prior assistant/model
+    context, prior user questions, then the question to answer now.
+    """
+    prior_context = "\n".join(
+        entry["content"] for entry in conversation_history if entry["role"] != "user"
+    )
+    prior_user_queries = "\n".join(
+        entry["content"] for entry in conversation_history if entry["role"] == "user"
+    )
+    return (
+        f"Context given:{prior_context}"
+        f"Previous Query:{prior_user_queries}"
+        f"\nMain query to be answered:{latest_question}"
+    )
 
 
 def _to_gemini_role(role: str) -> str:
@@ -138,69 +166,25 @@ class Backend_Api:
             A Flask Response object streaming Gemini output as text/event-stream.
         """
         try:
-            # Toggle for optional internet search (currently disabled)
-            internet_access = False
-
             # Backward-compatible: pull JSON from Flask request when not provided
             if payload is None:
                 payload = request.json
 
             jailbreak = payload["jailbreak"]
+            conversation_id = payload.get("conversation_id")
             conversation_history = payload["meta"]["content"]["conversation"]
             prompt = payload["meta"]["content"]["parts"][0]
-
-            current_date = datetime.now().strftime("%Y-%m-%d")
 
             # System message governing tone, style, and operational rules
             system_message = build_chat_system_prompt(datetime.now())
 
             extra: List[Dict[str, str]] = []
-            if internet_access:
-                # Optional duckduckgo search (disabled by default).
-                # If enabled, collects brief snippets for quick citations.
-                search = get(
-                    "https://ddg-api.herokuapp.com/search",
-                    params={"query": prompt["content"], "limit": 3},
-                    timeout=15,
-                )
-                blob = ""
-                for index, result in enumerate(search.json()):
-                    blob += (
-                        f'[{index}] "{result["snippet"]}"\n'
-                        f'URL:{result["link"]}\n\n'
-                    )
-                blob += (
-                    "\n\nInstructions: Using the provided web search results, write a "
-                    "comprehensive reply to the next user query. Make sure to cite results "
-                    "using [[number](URL)] notation after the reference. If the provided "
-                    "search results refer to multiple subjects with the same name, write "
-                    "separate answers for each subject. Ignore your previous response if any."
-                )
-                extra = [{"role": "user", "content": blob}]
 
             # Ask your LLM helper if search is required and obtain news context.
             try:
                 news_content, search_required, formatted_query = ask_from_llm(
                     "",
-                    "Context given:"
-                    + "\n".join(
-                        [
-                            entry_now["content"]
-                            for entry_now in conversation_history
-                            if entry_now["role"] != "user"
-                        ]
-                    )
-                    + "Previous Query:"
-                    + "\n".join(
-                        [
-                            entry_now["content"]
-                            for entry_now in conversation_history
-                            if entry_now["role"] == "user"
-                        ]
-                    )
-                    + "\n"
-                    + "Main query to be answered:"
-                    + prompt["content"],
+                    _build_llm_query(conversation_history, prompt["content"]),
                 )
             except TypeError as exc:
                 return Response(str(exc), status=500, mimetype="text/plain")
@@ -214,13 +198,13 @@ class Backend_Api:
 
             built_conversation: List[Dict[str, str]] = (
                 extra
-                + [entry_now for entry_now in conversation_history if entry_now["role"] != "system"]
+                + [entry for entry in conversation_history if entry["role"] != "system"]
                 + [{"role": "user", "content": first_user_prompt}]
                 + [{"role": "model", "content": f"\n{news_content}"}]
             )
 
             gemini_conversation = [
-                {"role": _to_gemini_role(msg["role"]), "parts": [msg["content"]]}
+                {"role": _to_gemini_role(msg["role"]), "parts": [{"text": msg["content"]}]}
                 for msg in built_conversation
             ]
 
@@ -247,42 +231,32 @@ class Backend_Api:
                             {
                                 "role": "user",
                                 "parts": [
-                                    build_complete_context_instruction()
+                                    {"text": build_complete_context_instruction()}
                                 ],
                             }
                         )
 
                         model_name = "gemini-2.5-flash"
-                        safety_settings = [
-                            {
-                                "category": "HARM_CATEGORY_HARASSMENT",
-                                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                            },
-                            {
-                                "category": "HARM_CATEGORY_HATE_SPEECH",
-                                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                            },
-                            {
-                                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                            },
-                            {
-                                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                            },
-                        ]
 
-                        model = build_gemini_model(model_name, safety_settings=safety_settings)
-                        chat = model.start_chat(history=convo)
+                        def _call_complete_context(client):
+                            contents = list(convo) + [
+                                {"role": "user", "parts": [{"text": prompt["content"]}]}
+                            ]
+                            return client.models.generate_content_stream(
+                                model=model_name,
+                                contents=contents,
+                                config=genai_types.GenerateContentConfig(
+                                    max_output_tokens=2100,
+                                    temperature=0.5,
+                                    top_p=0.5,
+                                    safety_settings=GEMINI_SAFETY_SETTINGS,
+                                ),
+                            )
 
-                        response = chat.send_message(
-                            prompt["content"],
-                            stream=True,
-                            generation_config=genai.GenerationConfig(
-                                max_output_tokens=2100,
-                                temperature=0.5,
-                                top_p=0.5,
-                            ),
+                        response = call_gemini_with_key_retry(
+                            model_name,
+                            _call_complete_context,
+                            streaming=True,
                         )
 
                         for chunk in response:
@@ -307,10 +281,16 @@ class Backend_Api:
                 def generate_fast() -> Iterable[bytes]:
                     """Flask generator: stream the fast single-phase answer."""
                     print("Streaming response from Gemini AI (complete context)...")
-                    yield from stream_gemini_flash_fast(
-                        list(gemini_conversation),
-                        error_messages,
-                    )
+                    response_parts: List[str] = []
+                    try:
+                        for chunk in stream_gemini_flash_fast(
+                            list(gemini_conversation),
+                            error_messages,
+                        ):
+                            response_parts.append(chunk.decode("utf-8", errors="replace"))
+                            yield chunk
+                    finally:
+                        save_chat_turn(conversation_id, prompt["content"], "".join(response_parts))
 
                 return Response(
                     stream_with_context(generate_fast()),
@@ -337,36 +317,22 @@ class Backend_Api:
                 """
                 print("Streaming response with latest context...")
                 try:
-                    safety_settings = [
-                        {
-                            "category": "HARM_CATEGORY_HARASSMENT",
-                            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                        },
-                        {
-                            "category": "HARM_CATEGORY_HATE_SPEECH",
-                            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                        },
-                        {
-                            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                        },
-                        {
-                            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                        },
-                    ]
+                    def _call_phase2(client):
+                        return client.models.generate_content_stream(
+                            model="gemini-2.5-flash",
+                            contents=user_prompt["content"],
+                            config=genai_types.GenerateContentConfig(
+                                max_output_tokens=2400,
+                                temperature=0.4,
+                                top_p=0.6,
+                                safety_settings=GEMINI_SAFETY_SETTINGS,
+                            ),
+                        )
 
-                    gemini_model = build_gemini_model(
-                        "gemini-2.5-flash", safety_settings=safety_settings
-                    )
-                    response = gemini_model.generate_content(
-                        user_prompt["content"],
-                        stream=True,
-                        generation_config=genai.GenerationConfig(
-                            max_output_tokens=2400,
-                            temperature=0.4,
-                            top_p=0.6,
-                        ),
+                    response = call_gemini_with_key_retry(
+                        "gemini-2.5-flash",
+                        _call_phase2,
+                        streaming=True,
                     )
                     response_text_parts: List[str] = []
                     for chunk in response:
@@ -377,14 +343,16 @@ class Backend_Api:
                         if not chunk_text:
                             continue
                         response_text_parts.append(chunk_text)
-                        yield chunk_text.encode("utf-8")
 
                     response_text = "".join(response_text_parts).strip()
                     if not response_text:
                         print("Phase 2 returned no text.")
                         return
                     if response_text == "NO_NEW_UPDATES":
+                        print("Phase 2 had no new updates; suppressing sentinel from output.")
                         return
+
+                    yield response_text.encode("utf-8")
 
                 except Exception as exc:
                     print(f"Error during Gemini API call: {exc}")
@@ -429,20 +397,37 @@ class Backend_Api:
                 """
 
                 # Phase 1 (fast)
-                model = build_gemini_model("gemini-2.5-flash")
-                chat = model.start_chat(history=gemini_conversation)
+                def _call_phase1(client):
+                    contents = list(gemini_conversation) + [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": prompt["content"]
+                                    + "\n"
+                                    + build_first_draft_instruction()
+                                }
+                            ],
+                        }
+                    ]
+                    return client.models.generate_content_stream(
+                        model="gemini-2.5-flash",
+                        contents=contents,
+                        config=genai_types.GenerateContentConfig(
+                            max_output_tokens=5000,
+                            temperature=0.3,
+                            top_p=0.5,
+                        ),
+                    )
 
-                response = chat.send_message(
-                    prompt["content"]
-                    + "\n"
-                    + build_first_draft_instruction(),
-                    stream=True,
-                    generation_config=genai.GenerationConfig(
-                        max_output_tokens=960,
-                        temperature=0.3,
-                        top_p=0.5,
-                    ),
-                )
+                try:
+                    response = call_gemini_with_key_retry(
+                        "gemini-2.5-flash", _call_phase1, streaming=True
+                    )
+                except Exception as exc:
+                    print(f"Phase 1 failed on every available key: {exc}")
+                    yield random.choice(error_messages).encode("utf-8")
+                    return
 
                 initial_response = ""
                 print("=== Phase 1 starting ===")
@@ -475,35 +460,13 @@ class Backend_Api:
                 news_content_latest: Optional[str] = None
                 try:
                     print("Fetching latest news content...")
-                    latest_result = ask_from_llm(
+                    news_content_latest, _, _ = ask_from_llm(
                         "",
-                        "Context given:"
-                        + "\n".join(
-                            [
-                                entry_now["content"]
-                                for entry_now in conversation_history
-                                if entry_now["role"] != "user"
-                            ]
-                        )
-                        + "Previous Query:"
-                        + "\n".join(
-                            [
-                                entry_now["content"]
-                                for entry_now in conversation_history
-                                if entry_now["role"] == "user"
-                            ]
-                        )
-                        + "\n"
-                        + "Main query to be answered:"
-                        + prompt["content"],
+                        _build_llm_query(conversation_history, prompt["content"]),
                         news_content,
                         formatted_query,
                         force_search=True,
                     )
-                    if isinstance(latest_result, tuple):
-                        news_content_latest = latest_result[0]
-                    else:
-                        news_content_latest = latest_result
                     print("Fetched latest news content")
                 except Exception as exc:
                     print(exc)
@@ -527,8 +490,18 @@ class Backend_Api:
                 else:
                     yield "\n\n_No further live updates were available, so this answer used the first-pass context only._".encode("utf-8")
 
+            def generate_two_phase() -> Iterable[bytes]:
+                """Wraps stream_fast_gemini() to save the full transcript once it ends."""
+                response_parts: List[str] = []
+                try:
+                    for chunk in stream_fast_gemini():
+                        response_parts.append(chunk.decode("utf-8", errors="replace"))
+                        yield chunk
+                finally:
+                    save_chat_turn(conversation_id, prompt["content"], "".join(response_parts))
+
             return Response(
-                stream_with_context(stream_fast_gemini()),
+                stream_with_context(generate_two_phase()),
                 content_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 direct_passthrough=True,

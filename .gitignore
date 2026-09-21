@@ -16,6 +16,7 @@ offthebar.zip
 output.csv
 
 client/json/
+chat_logs/
 *client_secret*.json
 *service-account*.json
 offthebar-*.json

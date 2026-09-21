@@ -1,6 +1,3 @@
-import os
-from config_env import require_env
-
 error_messages = [
     "🥅 Server missed the penalty! Try again later.",
     "🚦 VAR checking... Please try again later!",
@@ -22,24 +19,12 @@ error_messages = [
 import requests
 import urllib.robotparser
 from urllib.parse import urlparse
+from config_env import require_env
 from kb_google import search_pinecone
 from rank_bm25 import BM25Okapi
 from nltk.tokenize import word_tokenize
-print("Loading DuckDuckGo search tools...")
-print("DuckDuckGo search tools loaded.")
-# from bs4 import BeautifulSoup
-# import json
-print("Loading NLTK and Sentence Transformers...")
 from nltk.tokenize import sent_tokenize
-print("NLTK loaded.")
 
-
-def _jina_headers():
-    return {
-        "Authorization": f"Bearer {require_env('JINA_API_KEY')}",
-        "X-Engine": "direct",
-        "X-Timeout": "10s"
-    }
 
 def is_scraping_allowed(url, user_agent='*'):
     # Parse the domain from the URL
@@ -73,15 +58,6 @@ def chunk_article(text, max_chunk_length=250):
         chunks.append(chunk.strip())
     return chunks
 
-def rank_chunks_by_relevance(chunks, query, top_k=5):
-    embeddings = model.encode([query] + chunks, convert_to_tensor=True)
-    query_emb = embeddings[0]
-    chunk_embs = embeddings[1:]
-    scores = util.cos_sim(query_emb, chunk_embs)[0]
-    print(len(scores), "scores length")
-    top_indices = scores.topk(top_k if top_k<=len(scores) else len(scores)).indices
-    return [chunks[i] for i in top_indices]
-
 def rank_chunks_bm25(chunks, query, top_k=5):
     # Tokenize chunks
     tokenized_chunks = [word_tokenize(chunk.lower()) for chunk in chunks]
@@ -99,339 +75,22 @@ def rank_chunks_bm25(chunks, query, top_k=5):
     top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     return [chunks[i] for i in top_indices]
 
-def rank_chunks_by_relevance_and_date(chunks, query, top_k=5):
-    # Step 1: Rank chunks by semantic similarity
-    embeddings = model.encode([query] + chunks, convert_to_tensor=True)
-    query_emb = embeddings[0]
-    chunk_embs = embeddings[1:]
-    scores = util.cos_sim(query_emb, chunk_embs)[0]
-    top_indices = scores.topk(top_k if top_k <= len(scores) else len(scores)).indices.tolist()
-
-    # Step 2: Define date-related keywords to search for
-    date_keywords = ['published', 'date', 'updated', 'posted', 'on', 'time', 'release']
-
-    # Step 3: Identify chunks with a likely publication date
-    date_chunks = [i for i, chunk in enumerate(chunks)
-                  if any(word in chunk.lower() for word in date_keywords)
-                  and any(char.isdigit() for char in chunk)]
-
-    # Step 4: Merge top-ranked and date-containing chunks
-    all_indices = list(set(top_indices + date_chunks))
-
-    # Step 5: Return unique selected chunks
-    return [chunks[i] for i in all_indices]
-
-
-
-def get_top_bm25_contexts(page_contents, formatted_query, results, top_n=5):
-    """Return top-N URLs and content ranked by BM25 relevance to the query."""
-    query_tokens = word_tokenize(formatted_query.lower())
-
-    # Tokenize documents
-    tokenized_corpus = []
-    url_to_text = []
-    for result in results.get("results", []):
-        url = result["url"]
-        content = page_contents.get(url, " ")
-        if content is None:
-            content = " "
-        tokenized_text = word_tokenize(content.lower())
-        tokenized_corpus.append(tokenized_text)
-        url_to_text.append((url, content, result["title"], result.get("snippet", "")))
-
-    bm25 = BM25Okapi(tokenized_corpus)
-    scores = bm25.get_scores(query_tokens)
-
-    # Pair scores with URLs, titles, content
-    scored_results = sorted(
-        zip(scores, url_to_text),
-        key=lambda x: x[0],
-        reverse=True
-    )
-
-    # Return top-N
-    top_contexts = []
-    for score, (url, content, title, snippet) in scored_results[:top_n]:
-        top_contexts.append({
-            "url": url,
-            "title": title,
-            "snippet": snippet,
-            "content": content
-        })
-
-    return top_contexts
-
-
-def can_fetch(url, user_agent="*"):
-    """Check robots.txt to see if scraping is allowed for the URL."""
-    domain = "/".join(url.split("/")[:3])
-    robots_url = f"{domain}/robots.txt"
-
-    rp = urllib.robotparser.RobotFileParser()
-    rp.set_url(robots_url)
-
-    try:
-        # Manually fetch robots.txt with timeout
-        response = requests.get(robots_url, timeout=2)
-        response.raise_for_status()
-        rp.parse(response.text.splitlines())  # Manually parse the content
-        return rp.can_fetch(user_agent, url)
-    except Exception as e:
-        print(f"Error accessing robots.txt for {domain}: {e}")
-        return False  # Assume disallowed if robots.txt cannot be accessed
-
-def extract_publication_date(soup):
-    """Extract the publication date of the webpage."""
-    # Check for meta tags with publication date
-    date_meta_tags = [
-        {'name': 'article:published_time'},
-        {'property': 'article:published_time'},
-        {'name': 'date'},
-        {'property': 'og:updated_time'}
-    ]
-
-    for tag in date_meta_tags:
-        meta_date = soup.find('meta', tag)
-        if meta_date and 'content' in meta_date.attrs:
-            return meta_date['content']
-
-    script_tag = soup.find('script', type='application/ld+json')
-    if script_tag:
-        try:
-            data = json.loads(script_tag.string)
-            if isinstance(data, dict) and 'datePublished' in data:
-                return data['datePublished']
-        except json.JSONDecodeError:
-            pass
-
-    # Check for visible <time> tags
-    time_tag = soup.find('time')
-    if time_tag:
-        return time_tag.get_text(strip=True)
-
-    return "Publication date not found."
-
-def is_relevant_line(line):
-    """Determine if a line is relevant content."""
-    irrelevant_keywords = [
-        "Home", "News", "Photos", "Videos", "Reviews", "Press Release",
-        "Box Office", "More", "Trends", "Movie Schedule", "World", "Life Style",
-        "Shorts", "Interviews", "Paparazzi", "Stories"
-    ]
-    if len(line) < 5:
-        return False
-    if any(keyword.lower() in line.lower() for keyword in irrelevant_keywords):
-        return False
-    return True
-
-def extract_relevant_paragraphs(soup, keywords, proximity=1):
-    """Extract paragraphs close to specific keywords."""
-    paragraphs = soup.find_all('p')  # Find all paragraph tags
-    relevant_paragraphs = []
-
-    for i, para in enumerate(paragraphs):
-        text = para.get_text(strip=True)
-        if any(keyword.lower() in text.lower() for keyword in keywords):
-            start = max(0, i - proximity)
-            end = min(len(paragraphs), i + proximity + 1)
-            relevant_paragraphs.extend(paragraphs[start:end])
-
-    unique_paragraphs = list({para.get_text(strip=True) for para in relevant_paragraphs})
-    return unique_paragraphs
-
-def extract_main_content_with_keywords(url, keywords, proximity=1):
-    """Fetch and parse the main text content of a page with keyword filtering."""
-    try:
-        response = requests.get(url, timeout=2)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Extract publication date
-        pub_date = extract_publication_date(soup)
-        # Extract relevant paragraphs based on keywords
-        relevant_paragraphs = extract_relevant_paragraphs(soup, keywords, proximity)
-
-        # Filter out repetitive or irrelevant lines
-        filtered_paragraphs = [
-            para for para in relevant_paragraphs if is_relevant_line(para)
-        ]
-
-        return f"Publication date: {pub_date}\n" + ('\n'.join(filtered_paragraphs) if filtered_paragraphs else "No relevant content found.")
-    except Exception as e:
-        return f"Error scraping the page: {e}"
-
-def scrape_page(url, keywords, user_agent="*", proximity=1):
-    print(f"Scraping URL: {url}")
-    """Check robots.txt and scrape keyword-specific content if allowed."""
-    if can_fetch(url, user_agent):
-        print(f"Scraping allowed for: {url}")
-        content = extract_main_content_with_keywords(url, keywords, proximity)
-        return content
-    else:
-        print(f"Scraping disallowed by robots.txt: {url}")
-
-def html_to_text(html):
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Remove script/style
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    # Extract visible text
-    return soup.get_text(separator="\n", strip=True)
-
-
-
-def get_page_metadata(url):
-    try:
-        response = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(response.text, 'html.parser')
-        title = soup.find("meta", property="og:title") or soup.title
-        desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
-        return {
-            "title": title["content"] if title else None,
-            "description": desc["content"] if desc else None
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-def get_wayback_snapshot(url):
-    headers = {"User-Agent": "TheRunOfPlay/1.0 (+mailto:therunofplay10@gmail.com)"}
-
-    res = requests.get("http://archive.org/wayback/available", params={"url": url},headers=headers)
-    data = res.json()
-    return data.get("archived_snapshots", {}).get("closest", {}).get("url")
-
-
-def get_archived_image_url(image_url):
-
-    headers = {
-"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"
-    }
-
-    # 1. Wayback Machine
-    try:
-        res = requests.get("http://archive.org/wayback/available", params={"url": image_url}, headers=headers, timeout=15)
-        data = res.json()
-        wb_url = data.get("archived_snapshots", {}).get("closest", {}).get("url")
-        if wb_url:
-            return {"source": "Wayback Machine", "url": wb_url}
-    except Exception as e:
-        print(f"[Wayback] Error: {e}")
-    try:
-        archive_today_url = f"https://archive.today/?run=1&url={quote(image_url)}"
-        res = get_archive_today_snapshot_with_selenium(archive_today_url, wait_seconds=0.5)
-        return {"source": "Archive.today", "url": archive_today_url, "html": res.get("html")}
-    except Exception as e:
-        print(f"[Archive.today] Error: {e}")
-
-    try:
-        google_cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{quote(image_url)}"
-        res = requests.head(google_cache_url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            return {"source": "Google Cache", "url": google_cache_url}
-    except Exception as e:
-        print(f"[Google Cache] Error: {e}")
-
-    # Fallback
-    return {"source": None, "url": None}
-
-
-def get_rss_summary(feed_url):
-    d = feedparser.parse(feed_url)
-    return [(entry.title, entry.link, entry.summary) for entry in d.entries]
-
-def scrape_wayback_page(snapshot_url):
-    if snapshot_url["source"] == "Archive.today":
-        text = html_to_text(snapshot_url["html"])
-        print(text)
-        return text
-
-    try:
-        headers = _jina_headers()
-        print("Fetching Wayback snapshot from:", snapshot_url)
-        if not snapshot_url:
-            return "[Error] No Wayback snapshot URL found."
-        res = requests.get("https://r.jina.ai/"+snapshot_url['url'], headers=headers, timeout=10)
-        print(res.text)
-        return res.text
-
-    except Exception as e:
-        return f"[Error] {e}"
-
-
-
-def is_wayback_archived(url):
-    """
-    Returns 'yes' if the URL has a Wayback Machine snapshot,
-    otherwise returns 'no'.
-    """
-    try:
-        res = requests.get("http://archive.org/wayback/available", params={"url": url}, timeout=15)
-        data = res.json()
-        return 1 if "closest" in data.get("archived_snapshots", {}) else 0
-    except:
-        return 0
-
-def scrape_jinaAI(url):
-    try:
-        headers = _jina_headers()
-        res = requests.get("https://r.jina.ai/"+url, headers=headers, timeout=5)
-        print(res.text)
-        return res.text
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return None
-
-def get_wayback_snapshot_and_content(url):
-
-    try:
-        headers = _jina_headers()
-
-        # Step 1: Check snapshot availability
-        res = requests.get("http://archive.org/wayback/available", params={"url": url}, timeout=15)
-        data = res.json()
-        print(data)
-        snapshot = data.get("archived_snapshots", {}).get("closest", {})
-
-        if not snapshot.get("url"):
-            return None
-
-        snapshot_url = snapshot["url"]
-        print(f"Wayback snapshot URL: {snapshot_url}")
-
-        # Step 2: Download the snapshot content
-        res = requests.get("https://r.jina.ai/"+snapshot_url, headers=headers, timeout=10)
-        print(res.text)
-        return res.text
-
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return None
-
-
 from datetime import date
 from datetime import datetime
 
-
-def bm25_score(query, document):
-    query_tokens = word_tokenize(query.lower())
-    doc_tokens = [word_tokenize(document.lower())]
-    bm25 = BM25Okapi(doc_tokens)
-    return bm25.get_scores(query_tokens)[0]
-
-
-today = date.today()
 from crawl4AI import crawl_page
 
 def _log_query(label, value):
     print(f"[OffTheBar query] {label}: {value!r}")
 
 
-def formatted_prompting(query,formatted_query, player_query, team_query, fallback_context = None,search_required=None):
-    context = False
+def build_news_context(query, formatted_query, fallback_context=None, search_required=None):
+    """
+    Resolve the context text to feed the LLM: a fresh Pinecone match, a stale
+    Pinecone match kept as fallback, or freshly scraped web search results.
 
+    Returns (context_text, search_required, formatted_query).
+    """
     print("Formatted query:", formatted_query)
     retrieval_query = formatted_query or query
     relevance_query = formatted_query or query
@@ -452,7 +111,6 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
             print(f"Pinecone search failed: {exc}")
             _log_query("pinecone_failed", str(exc))
             matches = []
-        pinecone_fallback = ""
         if matches:
             top_match = matches[0]
             score = top_match['score']
@@ -480,8 +138,15 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
                 print(f"Pinecone context is not fresh enough. Score: {score:.2f}, Days ago: {days_diff}")
                 for match in matches:
                         md = match['metadata']
+                        match_created_str = md.get('created', '')
+                        try:
+                            match_created = datetime.strptime(match_created_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+                            match_days_old = (datetime.utcnow() - match_created).days
+                            staleness_note = f"OUTDATED - published {match_days_old} days ago, not recent news"
+                        except Exception:
+                            staleness_note = "OUTDATED - publish date unknown, do not assume this is recent"
                         pinecone_contexts.append(
-                            f"[RUN OF PLAY CONTEXT - Historical]\n{md.get('created', 'Unknown Date')}\n\n{md.get('chunk', 'No content')}\n"
+                            f"[RUN OF PLAY CONTEXT - {staleness_note}]\n{match_created_str or 'Unknown Date'}\n\n{md.get('chunk', 'No content')}\n"
                         )
 
                 fallback_context = "\n\n".join(pinecone_contexts)
@@ -493,11 +158,10 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
         _log_query("web_search_skipped", "search_required is false")
         return fallback_context or "", False, formatted_query
 
-    url = "https://asia-south1-runofplay.cloudfunctions.net/searx_proxy"
+    url = f"{require_env('SEARXNG_URL').rstrip('/')}/search"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
-    search_results = []
     results = {"results": []}
     print("Searching for news context...")
     print("Formatted query:", formatted_query)
@@ -507,32 +171,50 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
             "q": formatted_query,
             "format": "json",
             "language": "en",
-            "safesearch": 1
+            "safesearch": 1,
+            # Our self-hosted SearXNG runs on Cloud Run; its outbound IPs get
+            # instant CAPTCHAs/rate-limits from duckduckgo/google/brave/startpage
+            # (a universal problem for cloud-hosted SearXNG, not fixable via
+            # config). Bing is the one major engine that doesn't block it.
+            "engines": "bing,bing news",
         }
 
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
 
         results = response.json()
-        # search_results = search.invoke(formatted_query)
-        context = True
     except Exception as e:
         print(f"Error: {e}")
-        # return random.choice(error_messages)
-        pass
     print("Search results:", len(results.get("results", [])))
     page_contents = {}
-    for r_now in results.get("results", [])[:10]:
+    for r_now in results.get("results", []):
         # page_contents[r_now[url]] = r_now.get("snippet", []) + scrape_page(url, keywords)
         page_contents[r_now["url"]] = r_now.get("title", " ") + r_now.get("content", " ") +  r_now.get("snippet", " ")
     print("Page contents:", len(page_contents))
     prompt_begin = f" These are the news context for the following query - {query}.\n\n"
 
-    prompt_context = []
-    prompt_context_short = []
+    # Bing sometimes ranks tangentially-matched pages highly (e.g. a query
+    # containing "Lionel" surfacing "first name vs last name" grammar pages,
+    # or Lionel-brand model-train stores). A single shared token like "lionel"
+    # isn't discriminating enough - Bing itself gets confused by it. Require
+    # overlap on at least 2 distinct query terms (or all of them, if the
+    # query is short) before trusting a result; fall back to the unfiltered
+    # list if that empties it out.
+    query_tokens = {t for t in relevance_query.lower().split() if len(t) > 2}
+    min_overlap = min(2, len(query_tokens)) or 1
+
+    def _is_relevant(ctx):
+        haystack = f"{ctx.get('title', '')} {ctx.get('content', '')}".lower()
+        overlap = sum(1 for token in query_tokens if token in haystack)
+        return overlap >= min_overlap
+
+    candidate_results = [r for r in results.get("results", []) if _is_relevant(r)]
+    if not candidate_results:
+        print("Relevance filter matched nothing; falling back to unfiltered results.")
+        candidate_results = results.get("results", [])
 
     prompt_context = []
-    for ctx in results.get("results", []):
+    for ctx in candidate_results:
         if(len(prompt_context) >=2):
             break
         scrape_premission = is_scraping_allowed(ctx["url"])
@@ -550,38 +232,34 @@ def formatted_prompting(query,formatted_query, player_query, team_query, fallbac
         print("Chunking started for", ctx['url'])
         page_chunks = chunk_article(page_text)
         print(f"Page chunks for {ctx['url']}: {len(page_chunks)}")
-        # wayback_chunks = chunk_article(wayback_text)
-        print(f"Page chunks for {ctx['url']}: {len(page_chunks)}")
+        if not page_chunks:
+            # crawl_page can return text that survives the `if not page_text`
+            # check (e.g. whitespace, or a page blocked by anti-bot
+            # protection that still yields a near-empty string) but has no
+            # tokenizable sentences. BM25Okapi divides by corpus size, so an
+            # empty chunk list crashes the whole request - skip instead.
+            print(f"Skipping {ctx['url']} - no usable chunks after tokenization")
+            continue
         top_chunks = rank_chunks_bm25(page_chunks, relevance_query, top_k=5)
         print(f"Top chunks for {ctx['url']}: {len(top_chunks)}")
         # print(top_chunks[0])
         top_chunks_str = '\n\n'.join(top_chunks)
-        prompt_context.append(f"NEWS - {ctx['title']} :  {ctx['url']}\nPage content: {page_contents[ctx['url']]} \n\n{page_metadata} {top_chunks_str}\n")
+        prompt_context.append(f"NEWS - {ctx['title']} :  {ctx['url']}\nPage content: {page_contents.get(ctx['url'], '')} \n\n{page_metadata} {top_chunks_str}\n")
 
     print(len(prompt_context))
-    # return
     prompt_context = "\n\n".join(prompt_context)
-
-
 
     formatted_prompt_short = prompt_begin + "Recent news:\n\n" + prompt_context
 
-    # formatted_prompt_short += "\n\n" + fallback_context
-
-    return formatted_prompt_short
+    return formatted_prompt_short, search_required, formatted_query
 
 
 
 import json
 import re
-from datetime import date
 
-from gemini_utils import build_gemini_model
+from gemini_utils import call_gemini_with_key_retry
 from prompt_templates import build_search_classifier_prompt
-
-
-def _get_gemini_model():
-    return build_gemini_model("gemini-2.5-flash-lite")
 
 
 def _heuristic_query_classifier(user_question: str) -> dict:
@@ -738,7 +416,12 @@ def classify_and_build_query(user_question: str) -> dict:
 
     prompt = build_search_classifier_prompt(user_question, today)
     try:
-        response = _get_gemini_model().generate_content(prompt)
+        response = call_gemini_with_key_retry(
+            "gemini-2.5-flash-lite",
+            lambda client: client.models.generate_content(
+                model="gemini-2.5-flash-lite", contents=prompt
+            ),
+        )
         parsed = _best_effort_json(response.text)
         if heuristic_result["search_required"] and not parsed.get("search_required"):
             parsed["search_required"] = True
@@ -785,23 +468,12 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None, for
     _log_query("final_formatted_query", formatted_query)
     _log_query("search_required", search_required)
 
-    player_query = "player query"
-
-    team_query = "team query"
-
-    formatted_prompt = formatted_prompting(
+    return build_news_context(
         primary_question,
         formatted_query,
-        player_query,
-        team_query,
         fallback_context,
         search_required,
     )
-
-    if isinstance(formatted_prompt, tuple):
-        return formatted_prompt
-
-    return formatted_prompt, search_required, formatted_query
 
 if __name__ == "__main__":
     print("start")

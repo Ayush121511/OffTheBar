@@ -1,16 +1,9 @@
 Flask
 Flask-Cors
-CacheControl
 requests
-google-auth
-google-auth-oauthlib
-google-generativeai
+google-genai
 pinecone
 rank-bm25
 nltk
-beautifulsoup4
-feedparser
 crawl4ai
-statsbombpy
-pandas
 python-dotenv
