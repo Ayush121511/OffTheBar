@@ -482,11 +482,20 @@ class Backend_Api:
                         news_content_latest,
                         error_messages,
                     )
+                    yielded_any = False
                     for chunk in followup_response:
+                        yielded_any = True
                         try:
                             yield chunk
                         except Exception as exc:
                             print(chunk)
+                    if not yielded_any:
+                        # stream_gemini_flash yields nothing (no exception)
+                        # when Gemini returns the NO_NEW_UPDATES sentinel or
+                        # empty text - previously that left the stream ending
+                        # right at "HALFTIME" with no resolution.
+                        print("Phase 2 yielded nothing (no new updates) - closing out the response instead of leaving it hanging.")
+                        yield "\n\n_Nothing new beyond the first take - what's above still stands._".encode("utf-8")
                 else:
                     yield "\n\n_No further live updates were available, so this answer used the first-pass context only._".encode("utf-8")
 

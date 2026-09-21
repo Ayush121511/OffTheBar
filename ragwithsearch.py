@@ -191,7 +191,22 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
         # page_contents[r_now[url]] = r_now.get("snippet", []) + scrape_page(url, keywords)
         page_contents[r_now["url"]] = r_now.get("title", " ") + r_now.get("content", " ") +  r_now.get("snippet", " ")
     print("Page contents:", len(page_contents))
-    prompt_begin = f" These are the news context for the following query - {query}.\n\n"
+    # Unlike the Pinecone branch above, SearXNG/Bing results carry no
+    # verified publish date we compute against - without saying so
+    # explicitly, the model has no factual basis for "current" claims and
+    # will confabulate confidence (observed live: presenting gameweek-old
+    # FPL data as freshly "confirmed current"). State today's real date and
+    # make the model responsible for not asserting recency it can't verify.
+    prompt_begin = (
+        f"Today's real date is {date.today().isoformat()}.\n"
+        f"These are web search results for the following query - {query}.\n"
+        "None of these results have a verified publish date unless the "
+        "source explicitly states one below. Do not describe this "
+        "information as \"confirmed current\", \"fresh\", or \"up to date\" "
+        "unless a date in the text itself supports that conclusion. If you "
+        "cannot tell how recent something is, say so plainly instead of "
+        "asserting confidence you don't have.\n\n"
+    )
 
     # Bing sometimes ranks tangentially-matched pages highly (e.g. a query
     # containing "Lionel" surfacing "first name vs last name" grammar pages,
@@ -244,7 +259,8 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
         print(f"Top chunks for {ctx['url']}: {len(top_chunks)}")
         # print(top_chunks[0])
         top_chunks_str = '\n\n'.join(top_chunks)
-        prompt_context.append(f"NEWS - {ctx['title']} :  {ctx['url']}\nPage content: {page_contents.get(ctx['url'], '')} \n\n{page_metadata} {top_chunks_str}\n")
+        published = ctx.get("publishedDate") or "unknown - do not assume this is recent"
+        prompt_context.append(f"NEWS - {ctx['title']} :  {ctx['url']}\nPublished: {published}\nPage content: {page_contents.get(ctx['url'], '')} \n\n{page_metadata} {top_chunks_str}\n")
 
     print(len(prompt_context))
     prompt_context = "\n\n".join(prompt_context)
