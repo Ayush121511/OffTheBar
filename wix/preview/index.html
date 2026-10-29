@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Off The Bar - local Wix preview</title>
+<style>
+  body{ margin:0; font:14px/1.4 system-ui, sans-serif; background:#fafafa; color:#111; }
+  .toolbar{ display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding:8px 12px; background:#111; color:#eee; }
+  .toolbar a{ color:#9cf; }
+  .toolbar b{ color:#fff; }
+  .page{ max-width:1000px; margin:0 auto; padding:0 12px; }
+  #titleStack{ cursor:pointer; padding:14px 0 6px; font-size:22px; font-weight:700; }
+  #titleStack small{ font-size:12px; font-weight:400; color:#666; }
+  #chatHtml{ display:block; width:100%; height:62vh; border:1px solid #ddd; background:#fff; }
+  .inputRow{ display:flex; gap:8px; align-items:center; margin-top:8px; }
+  #inputHtml{ flex:1; height:100px; border:0; }
+  #sendBtn{ padding:10px 16px; border-radius:10px; border:1px solid #000; background:#fff; cursor:pointer; }
+  #sendBtn:disabled{ opacity:.5; cursor:default; }
+  details{ margin:10px 0 24px; }
+  pre{ white-space:pre-wrap; word-break:break-word; background:#fff; border:1px solid #ddd; padding:8px; max-height:300px; overflow:auto; }
+</style>
+
+<!-- The page code's imports, resolved locally. Wix installs `marked` from npm;
+     check the version in the Wix package manager if rendering ever differs. -->
+<script type="importmap">
+{
+  "imports": {
+    "marked": "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js",
+    "wix-location": "./wix-location.js"
+  }
+}
+</script>
+
+<script>
+// Minimal stand-in for Wix's $w, covering only what offthebar-page.js uses.
+(function () {
+  const cache = {};
+
+  function htmlEmbed(iframe) {
+    return {
+      postMessage(data) { if (iframe.contentWindow) iframe.contentWindow.postMessage(data, '*'); },
+      onMessage(cb) {
+        window.addEventListener('message', (ev) => { if (ev.source === iframe.contentWindow) cb({ data: ev.data }); });
+      }
+    };
+  }
+
+  function button(el) {
+    return {
+      get label() { return el.textContent; },
+      set label(v) { el.textContent = v; },
+      enable() { el.disabled = false; return Promise.resolve(); },
+      disable() { el.disabled = true; return Promise.resolve(); },
+      onClick(cb) { el.addEventListener('click', cb); }
+    };
+  }
+
+  window.$w = function (selector) {
+    if (cache[selector]) return cache[selector];
+    const el = document.getElementById(selector.slice(1));
+    if (!el) throw new Error(`The preview has no element ${selector}`);
+    cache[selector] = el.tagName === 'IFRAME' ? htmlEmbed(el)
+      : el.tagName === 'BUTTON' ? button(el)
+      : { onClick(cb) { el.addEventListener('click', cb); } };
+    return cache[selector];
+  };
+  window.$w.onReady = (cb) => cb();   // module scripts run after the DOM is parsed
+})();
+
+// Route /api/chat to the chosen backend (?backend=mock|local|live) and show
+// each request body, so the history sent to the API can be checked.
+(function () {
+  const backend = new URLSearchParams(location.search).get('backend') || 'mock';
+  const realFetch = window.fetch.bind(window);
+  const encoder = new TextEncoder();
+  window.PREVIEW_BACKEND = backend;
+
+  window.fetch = (url, opts) => {
+    if (typeof url !== 'string' || !url.endsWith('/api/chat')) return realFetch(url, opts);
+
+    const body = JSON.parse(opts.body);
+    console.log('[preview] /api/chat request', body);
+    const panel = document.getElementById('lastRequest');
+    if (panel) panel.textContent = JSON.stringify(body, null, 2);
+
+    if (backend === 'live') return realFetch(url, opts);
+    if (backend === 'local') return realFetch('http://localhost:1338/api/chat', opts);
+    return mockChat(body, opts.signal);
+  };
+
+  // Imitates server/backend.py's two-phase stream: draft, HALFTIME line, pause, refinement.
+  function mockChat(body, signal) {
+    const question = body.meta.content.parts[0].content;
+    if (/mock-error/i.test(question)) {
+      return Promise.resolve(new Response('{"error": "mock failure"}', { status: 500 }));
+    }
+
+    const phase1 = `Mock draft for "${question}" - the ball's rolling, but this is a rehearsal, not the match. ` +
+      'Here comes a **bold** claim and a short list:\n\n- first point\n- second point';
+    const phase2 = '### Mock update\nPhase 2 lands like a late winner. Raw HTML should show as text: ' +
+      '<b>not bold</b>.\n\n- "What else happened?"\n- "Who starts next week?"';
+
+    const script = [];
+    phase1.split(' ').forEach((w) => script.push([60, w + ' ']));
+    script.push([60, '\n\n## HALFTIME!!! fetching latest updates\n\n']);
+    script.push([2500, '']);   // Phase 2 retrieval time
+    phase2.split(' ').forEach((w) => script.push([40, w + ' ']));
+
+    let timers = [];
+    const stop = () => { timers.forEach(clearTimeout); timers = []; };
+    const stream = new ReadableStream({
+      start(controller) {
+        let t = 0;
+        for (const [delay, text] of script) {
+          t += delay;
+          timers.push(setTimeout(() => { if (text) controller.enqueue(encoder.encode(text)); }, t));
+        }
+        timers.push(setTimeout(() => controller.close(), t + 50));
+        if (signal) signal.addEventListener('abort', () => {
+          stop();
+          try { controller.error(new DOMException('Aborted', 'AbortError')); } catch (_) {}
+        });
+      },
+      cancel: stop
+    });
+    return Promise.resolve(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+  }
+})();
+</script>
+
+<!-- The page code itself, unmodified -->
+<script type="module" src="../offthebar-page.js"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <span>Backend: <b id="backendName"></b></span>
+    <a href="?backend=mock">mock</a>
+    <a href="?backend=local">local (python run.py)</a>
+    <a href="?backend=live">live Cloud Run (uses Gemini quota)</a>
+    <span>|</span>
+    <a id="msgLink" href="#">try a ?msg= link</a>
+  </div>
+
+  <div class="page">
+    <div id="titleStack">Off The Bar <small>(click = new chat, like the Wix title)</small></div>
+    <iframe id="chatHtml" src="../chat-iframe.html"></iframe>
+    <div class="inputRow">
+      <iframe id="inputHtml" src="../input-iframe.html"></iframe>
+      <button id="sendBtn">➤ Send</button>
+    </div>
+    <details>
+      <summary>Last /api/chat request body</summary>
+      <pre id="lastRequest">(nothing sent yet)</pre>
+    </details>
+  </div>
+
+  <script>
+    document.getElementById('backendName').textContent = window.PREVIEW_BACKEND;
+    document.getElementById('msgLink').href = `?backend=${window.PREVIEW_BACKEND}&msg=${encodeURIComponent('Who won the 2010 World Cup?')}`;
+  </script>
+</body>
+</html>
