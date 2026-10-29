@@ -126,40 +126,27 @@
     -webkit-backdrop-filter: blur(4px);
     pointer-events: none;
   }
+
+  /* Typing dots shown until the first chunk arrives */
   .typing {
     display: flex;
     gap: 5px;
     align-items: center;
     height: 24px;
-    }
-
-    .typing span {
+  }
+  .typing span {
     width: 10px;
     height: 10px;
     border-radius: 50%;
     background: #000;
     animation: bounce 1.4s infinite ease-in-out both;
-    }
-
-    .typing span:nth-child(1) {
-    animation-delay: -0.32s;
-    }
-
-    .typing span:nth-child(2) {
-    animation-delay: -0.16s;
-    }
-
-    @keyframes bounce {
-    0%, 80%, 100% {
-        transform: scale(0.4);
-        opacity: 0.4;
-    }
-
-    40% {
-        transform: scale(1);
-        opacity: 1;
-    }
-    }
+  }
+  .typing span:nth-child(1) { animation-delay: -0.32s; }
+  .typing span:nth-child(2) { animation-delay: -0.16s; }
+  @keyframes bounce {
+    0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
+    40%           { transform: scale(1);   opacity: 1; }
+  }
 </style>
 </head>
 <body>
@@ -186,9 +173,16 @@
   let userAvatar = '';
   let botAvatar  = '';
   let lastWasBot = false;
-  let streamSpan = null;
 
   function el(tag, cls){ const e=document.createElement(tag); if(cls) e.className=cls; return e; }
+
+  function avatarImg(src){
+    const img = el('img','avatar');
+    // Check the URL itself - an empty img.src can read back as this page's URL
+    if (src) img.src = src;
+    else img.style.display = 'none';
+    return img;
+  }
 
   /* 🎯 Precise autoscroll helper */
   function scrollToBottom(smooth = false){
@@ -217,13 +211,7 @@
       const bubble = el('div','bubble');
       bubble.innerHTML = html;
       msg.appendChild(bubble);
-
-      const img = el('img','avatar');
-      img.src = userAvatar || '';
-      if(!img.src) img.style.display='none';
-      msg.appendChild(img);
-
-      streamSpan = null;
+      msg.appendChild(avatarImg(userAvatar));
       log.appendChild(msg);
 
       /* ✅ Auto-scroll ONLY on new user message */
@@ -232,29 +220,13 @@
       return;
     }
 
-    // Bot message (begin)
-    const img = el('img','avatar');
-    img.src = botAvatar || '';
-    if(!img.src) img.style.display='none';
-    msg.appendChild(img);
+    // Bot message (begin) - empty html means "streaming starts": show typing dots
+    msg.appendChild(avatarImg(botAvatar));
 
     const content = el('div','content');
-    if (html === '') {
-        content.innerHTML = `
-        <div class="typing">
-        <span></span>
-        <span></span>
-        <span></span>
-        </div>
-        `;
-
-        streamSpan = null;
-
-    } else {
-      // non-streamed bot message
-      content.innerHTML = html;
-      streamSpan = null;
-    }
+    content.innerHTML = html === ''
+      ? '<div class="typing"><span></span><span></span><span></span></div>'
+      : html;
     msg.appendChild(content);
 
     log.appendChild(msg);
@@ -264,54 +236,34 @@
     scrollToBottom(true);
   }
 
-  function appendBotChunk(plainChunk){
-    // ⛔ No auto-scroll during streaming
+  // The current bot message's content, creating the message first if the
+  // parent's 'add-message' never arrived (e.g. posted before this iframe loaded)
+  function botContent(){
     const last = log.lastElementChild;
-    if (!(lastWasBot && last && last.querySelector('.content'))) {
-      addMessage({ who:'bot', html:'' }); // will scroll once at start
-    }
-    const content = log.lastElementChild.querySelector('.content');
-    if (content.querySelector('.typing')) {
-      content.innerHTML = '';
-    }
-    if (!streamSpan) { streamSpan = el('span'); content.appendChild(streamSpan); }
-
-    const text = (plainChunk || '').replace(/\r?\n/g, ' ');
-    streamSpan.appendChild(document.createTextNode(text));
-    lastWasBot = true;
-    // no scroll here
+    if (lastWasBot && last && last.querySelector('.content')) return last.querySelector('.content');
+    addMessage({ who:'bot', html:'' }); // will scroll once at start
+    return log.lastElementChild.querySelector('.content');
   }
 
   function updateBotHtml(partialHtml, showCursor = true){
     // ⛔ No auto-scroll during streaming
-    const last = log.lastElementChild;
-    if (!(lastWasBot && last && last.querySelector('.content'))){
-      addMessage({ who:'bot', html:'' }); // will scroll once at start
-    }
-    const content = last.querySelector('.content');
-    if (content.querySelector('.typing')) {
-        content.innerHTML = '';
-    }
-
-    content.innerHTML = partialHtml + (showCursor ? '<span class="cursor"></span>' : '');
-    lastWasBot = true;
-    // no scroll here
+    botContent().innerHTML = partialHtml + (showCursor ? '<span class="cursor"></span>' : '');
   }
 
   function finalizeBot(finalHtml){
     // ⛔ No auto-scroll on finalize (keeps user position)
-    const last = log.lastElementChild;
-    if (last && last.querySelector('.content')) {
-      last.querySelector('.content').innerHTML = finalHtml;
-      streamSpan = null;
-    }
-    // no scroll here
+    if (!finalHtml) return; // never blank an answer that's already on screen
+    botContent().innerHTML = finalHtml;
   }
 
   // Measure stopbar height so .log can reserve just enough room
   function updateHeights(){
     const h = (stopbar && stopbar.offsetHeight) ? stopbar.offsetHeight : 0;
     document.documentElement.style.setProperty('--stopbar-h', h + 'px');
+  }
+
+  function announceReady(){
+    window.parent.postMessage({ type:'iframe-ready' }, '*');
   }
 
   // On load/resize: update layout only, no forced scroll
@@ -326,10 +278,10 @@
   // Messages from parent page
   window.addEventListener('message', (ev) => {
     const d = ev.data || {};
-    if (d.type === 'clear-chat') {
-        log.innerHTML = '';
-        streamSpan = null;
-        lastWasBot = false;
+    if (d.type === 'ping'){ announceReady(); } // parent may have missed the load-time announcement
+    if (d.type === 'clear-chat'){
+      log.innerHTML = '';
+      lastWasBot = false;
     }
     if (d.type === 'set-theme-vars' && d.vars){
       Object.entries(d.vars).forEach(([k,v]) => document.documentElement.style.setProperty(k, v));
@@ -338,7 +290,6 @@
     }
     if (d.type === 'set-avatars'){ userAvatar = d.user || userAvatar; botAvatar = d.bot || botAvatar; }
     if (d.type === 'add-message'){ addMessage({ who: d.from, html: d.html || '' }); }
-    if (d.type === 'append-bot-chunk'){ appendBotChunk(d.chunk || ''); }
     if (d.type === 'update-bot-html'){ updateBotHtml(d.html || '', d.cursor !== false); }
     if (d.type === 'finalize-bot'){ finalizeBot(d.html || ''); }
 
@@ -350,7 +301,7 @@
   });
 
   // Handshake
-  window.parent.postMessage({ type:'iframe-ready' }, '*');
+  announceReady();
 </script>
 </body>
 </html>
