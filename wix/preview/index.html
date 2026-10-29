@@ -9,6 +9,7 @@
   .toolbar{ display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding:8px 12px; background:#111; color:#eee; }
   .toolbar a{ color:#9cf; }
   .toolbar b{ color:#fff; }
+  #problem{ padding:8px 12px; background:#fde8e8; color:#8a1c1c; border-bottom:1px solid #f5c2c2; }
   .page{ max-width:1000px; margin:0 auto; padding:0 12px; }
   #titleStack{ cursor:pointer; padding:14px 0 6px; font-size:22px; font-weight:700; }
   #titleStack small{ font-size:12px; font-weight:400; color:#666; }
@@ -84,10 +85,30 @@
     const panel = document.getElementById('lastRequest');
     if (panel) panel.textContent = JSON.stringify(body, null, 2);
 
-    if (backend === 'live') return realFetch(url, opts);
-    if (backend === 'local') return realFetch('http://localhost:1338/api/chat', opts);
-    return mockChat(body, opts.signal);
+    if (backend === 'mock') return mockChat(body, opts.signal);
+
+    // The page code only shows a generic error (right for real users), so say what failed here.
+    const target = backend === 'local' ? 'http://localhost:1338/api/chat' : url;
+    return realFetch(target, opts)
+      .then((res) => {
+        if (!res.ok) showProblem(`/api/chat returned HTTP ${res.status}`);
+        return res;
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          showProblem(backend === 'local'
+            ? 'Local backend not reachable at http://localhost:1338 - start it from the repo root with: python -u run.py'
+            : `Live API request failed: ${err.message}`);
+        }
+        throw err;
+      });
   };
+
+  function showProblem(text) {
+    const el = document.getElementById('problem');
+    el.textContent = text;
+    el.hidden = false;
+  }
 
   // Imitates server/backend.py's two-phase stream: draft, HALFTIME line, pause, refinement.
   function mockChat(body, signal) {
@@ -141,6 +162,7 @@
     <span>|</span>
     <a id="msgLink" href="#">try a ?msg= link</a>
   </div>
+  <div id="problem" hidden></div>
 
   <div class="page">
     <div id="titleStack">Off The Bar <small>(click = new chat, like the Wix title)</small></div>
