@@ -29,6 +29,12 @@ from ragwithsearch import ask_from_llm, error_messages
 # they look for - keep it, or older embeds show the raw line.
 HALFTIME_MARKER = "## HALFTIME!!! "
 HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
+# Phase 1 is a ~60-word draft, so Gemini 2.5 Flash's default thinking mostly
+# adds cost (billed as output) and delays the first visible word: measured 676
+# thinking tokens for 66 visible ones. Phase 2 and complete answers keep it.
+# None = Gemini's default (dynamic) thinking.
+PHASE1_THINKING_BUDGET: Optional[int] = 0
+
 phase2_statuses = [
     "Checking the latest news",
     "Looking for newer reports",
@@ -398,6 +404,11 @@ class Backend_Api:
                         contents=contents_with(build_first_draft_instruction()),
                         config=genai_types.GenerateContentConfig(
                             system_instruction=system_message,
+                            thinking_config=(
+                                genai_types.ThinkingConfig(thinking_budget=PHASE1_THINKING_BUDGET)
+                                if PHASE1_THINKING_BUDGET is not None
+                                else None
+                            ),
                             max_output_tokens=5000,
                             temperature=0.3,
                             top_p=0.5,

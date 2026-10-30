@@ -120,6 +120,8 @@ LATEST_NEWS_MARKERS = [
     "tonight", "yesterday", "last night", "this morning", "this week",
     "this weekend", "right now", "now", "currently", "current", "breaking",
     "rumour", "rumours", "rumor", "rumors", "last match", "last game",
+    # questions about how someone is doing now ("How is United doing under Carrick?")
+    "doing", "lately", "these days", "at the moment", "form", "this season", "so far",
 ]
 
 
@@ -237,9 +239,14 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     _log_query("web_search_requested", bool(search_required))
 
     if fallback_context is None:
-        _log_query("kb_query", retrieval_query)
+        # The classifier's rewrite can drop the very name the user asked
+        # about ("How is United doing under Carrick?" became "Manchester
+        # United 2026-27 season performance manager"), so the user's own
+        # words are searched too.
+        kb_query = retrieval_query if query.lower() in retrieval_query.lower() else f"{retrieval_query} {query}"
+        _log_query("kb_query", kb_query)
         try:
-            hits = hybrid_search(retrieval_query, latest_news=latest_news, top_k=KB_TOP_K)
+            hits = hybrid_search(kb_query, latest_news=latest_news, top_k=KB_TOP_K)
         except Exception as exc:
             print(f"Run of Play search failed: {exc}")
             _log_query("kb_failed", str(exc))

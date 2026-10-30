@@ -82,9 +82,13 @@ gcloud run deploy offthebar-api \
   --memory 2Gi \
   --cpu 1 \
   --timeout 300 \
-  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,SEARXNG_URL=https://searxng-docker-607277832880.asia-south1.run.app" \
+  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,SEARXNG_URL=https://searxng-docker-607277832880.asia-south1.run.app,GEMINI_FREE_TIER_KEYS=2" \
   --set-secrets "FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
 ```
+
+`GEMINI_FREE_TIER_KEYS=2`: `GEMINI_API_KEY_2` is a free-tier key and
+`GEMINI_API_KEY` a paid one, so every Gemini call tries key 2 first and falls
+back to key 1 (see `gemini_utils.py`).
 
 `--memory 2Gi` (was 1Gi up to revision `00002`): the local embedding model adds
 roughly 260MB per process (measured: ~80MB for fastembed/onnxruntime, ~180MB
