@@ -1,9 +1,11 @@
 import os
+import traceback
 from os import urandom
 from time import time
 
 from flask import Flask, redirect, render_template, request
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from server.backend import conversation_endpoint
 from config_env import require_env
 
@@ -40,5 +42,10 @@ def chat_api():
 
 @app.errorhandler(Exception)
 def global_handler(e):
-    import traceback, json
-    return json.dumps({"error": str(e), "trace": traceback.format_exc()}), 500
+    # 404s, 405s and bad requests keep their own status. Anything else is
+    # logged here and answered generically - the traceback (with server paths)
+    # used to go back to the caller.
+    if isinstance(e, HTTPException):
+        return e
+    traceback.print_exc()
+    return {"error": "Internal server error"}, 500

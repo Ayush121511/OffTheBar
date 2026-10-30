@@ -1,4 +1,8 @@
-from flask import render_template, send_file, redirect
+from pathlib import Path
+
+from flask import abort, redirect, render_template, send_from_directory
+
+CLIENT_DIR = Path(__file__).resolve().parent.parent / "client"
 
 
 class Website:
@@ -22,7 +26,8 @@ class Website:
         return render_template('index.html', chat_id=conversation_id)
 
     def _assets(self, folder: str, file: str):
-        try:
-            return send_file(f"./../client/{folder}/{file}", as_attachment=False)
-        except:
-            return "File not found", 404
+        # send_from_directory refuses paths that leave client/ - send_file on
+        # the raw segments served repo-root files like .env for folder="..".
+        if folder.startswith("."):
+            abort(404)
+        return send_from_directory(CLIENT_DIR, f"{folder}/{file}")
