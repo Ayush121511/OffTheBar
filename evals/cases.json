@@ -1,6 +1,6 @@
 {
   "as_of": "2026-10-30",
-  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py). 'web_soccer_only' runs the web search as Phase 2 would and fails on any American football in what the answer would see; 'web_query_includes' checks the query actually sent to Bing News (after the soccer rewrite).",
+  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py). 'web_soccer_only' runs the web search as Phase 2 would and fails on any American football in what the answer would see; 'web_query_includes' checks the query actually sent to Bing News (after the soccer rewrite). 'facts' are confirmed facts handed to the rubric judge (true even if it doesn't know them).",
   "domains": {
     "latest-news": "Current events, form and standings - needs fresh information.",
     "match-results": "How a specific recent match went.",
@@ -702,6 +702,32 @@
         ]
       },
       "notes": "To Bing, 'fantasy football' is the NFL (10 of 10 results). For The Run of Play it means FPL, which must stay allowed."
+    },
+    {
+      "id": "barca-next-xi",
+      "domain": "latest-news",
+      "question": "barca upcoming fixture predicted XI",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "coverage_in": [
+          "none"
+        ],
+        "web_soccer_only": true,
+        "web_query_includes": [
+          "preview",
+          "predicted lineup"
+        ],
+        "answer_contains_any": [
+          "Alav"
+        ],
+        "facts": [
+          "Barcelona's next match is against Alavés in La Liga (around 2026-11-01)",
+          "Barcelona already played PSG in the Champions League on 2026-10-20 and Real Madrid on 2026-10-25"
+        ]
+      },
+      "notes": "The answer once gave the PSG match from ten days earlier as Barcelona's upcoming fixture: Bing News returned 10- and 13-day-old previews of played matches for 'Barcelona upcoming fixture predicted XI', while 'Barcelona preview' over the last week found same-day previews of the real next match, Alavés. Next-match questions now search '<club> preview predicted lineup' over the last week and keep only the last 3 days."
     }
   ]
 }

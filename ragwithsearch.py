@@ -228,6 +228,46 @@ LATEST_NEWS_MARKERS = [
 ]
 
 
+# Questions about the next match: fixtures, previews, predicted line-ups. A
+# preview is only useful while its match is still ahead, so these get web
+# results and Run of Play articles from the last FIXTURE_MAX_AGE_DAYS only.
+# "barca upcoming fixture predicted XI" got 10- and 13-day-old previews of
+# matches already played (PSG, Betis) and gave the PSG match as upcoming,
+# while Bing News had same-day previews of the real one (Alavés).
+FIXTURE_MAX_AGE_DAYS = 3
+FIXTURE_MARKERS = [
+    "upcoming", "next match", "next game", "next fixture", "fixture", "fixtures",
+    "predicted xi", "predicted lineup", "predicted line-up", "lineup", "line-up", "line up",
+    "starting xi", "team news", "preview", "play next", "playing next", "face next",
+    "kick-off", "kick off",
+]
+# Words that describe the fixture rather than name the club - as search terms
+# they pulled in other clubs' previews ("Barcelona upcoming fixture predicted
+# XI" over the last week: Nice, Le Havre, Deportivo), while "Barcelona preview"
+# and "Barcelona predicted lineup" found the Alavés previews.
+FIXTURE_QUERY_NOISE = {
+    "upcoming", "next", "fixture", "fixtures", "match", "game", "predicted", "xi", "lineup",
+    "line-up", "line", "up", "starting", "team", "news", "preview", "play", "playing", "face",
+    "kick-off", "kick", "off", "this", "weekend", "their", "the", "what", "who", "when", "is",
+    "are", "will", "do", "does", "for", "vs", "v", "against",
+}
+
+
+def _is_fixture_question(question, formatted_query):
+    """Asks about the next match - unless the question names a past year
+    ("Barcelona's lineup in the 2009 final")."""
+    past_year = any(int(year) < date.today().year for year in re.findall(r"\b(?:19|20)\d{2}\b", question or ""))
+    return not past_year and _has_marker(f"{question or ''} {formatted_query or ''}".lower(), FIXTURE_MARKERS)
+
+
+def _fixture_search_query(query):
+    """'<club> preview predicted lineup' - the wording Bing News answers with
+    previews of the club's next match. The query unchanged if it names nothing."""
+    names = [re.sub(r"'s$", "", word) for word in re.findall(r"[\w'-]+", query or "")
+             if word.lower() not in FIXTURE_QUERY_NOISE]
+    return " ".join(names + ["preview", "predicted", "lineup"]) if names else query
+
+
 def _is_latest_news_question(question, formatted_query):
     """True when the question asks for latest news, by its wording or by the
     classifier having pinned today's date into the search query."""
@@ -376,7 +416,9 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
 
     # Results are matched against the query as sent, so a rewritten "Premier
     # League injury news" doesn't drop soccer headlines for lacking "football".
-    search_query = _soccer_search_query(retrieval_query)
+    fixture = _is_fixture_question(query, formatted_query)
+    _log_query("fixture_question", fixture)
+    search_query = _soccer_search_query(_fixture_search_query(retrieval_query) if fixture else retrieval_query)
     relevance_query = search_query
     url = f"{require_env('SEARXNG_URL').rstrip('/')}/search"
     headers = {
@@ -400,7 +442,9 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             # which still returns relevant results, is used.
             "engines": "bing news",
         }
-        if latest_news:
+        if fixture:
+            params["time_range"] = "week"
+        elif latest_news:
             # Bing News ranks by relevance, not date - without this, half its
             # results for "Messi performance" were months or a year old.
             params["time_range"] = "month"
@@ -429,8 +473,14 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     # will confabulate confidence (observed live: presenting gameweek-old
     # FPL data as freshly "confirmed current"). State today's real date and
     # make the model responsible for not asserting recency it can't verify.
+    # A preview published today of Saturday's match was answered as "against
+    # Alavés today" - publish dates aren't match dates, and naming the coming
+    # days lets "this Saturday" in an article be placed.
+    coming_days = ", ".join(f"{date.today() + timedelta(days=n):%A %Y-%m-%d}" for n in range(1, 8))
     prompt_begin = (
-        f"Today's real date is {date.today().isoformat()}.\n"
+        f"Today's real date is {date.today():%A %Y-%m-%d}. The coming days: {coming_days}.\n"
+        "A \"Published\" date is when an article came out, not when the match it covers is played: "
+        "take match days from the text (\"this Saturday\", \"Tuesday night\") and place them with the dates above.\n"
         f"These are web search results for the following query - {query}.\n"
         "None of these results have a verified publish date unless the "
         "source explicitly states one below. Do not describe this "
@@ -469,15 +519,17 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     # A latest-news question only gets recent articles - Bing News happily
     # returns two-year-old pieces (a 2024 Inter Miami quote was presented as
     # current in a "latest news on Messi" answer). Filtered before scraping.
-    if latest_news:
+    # Next-match questions get only the last few days (FIXTURE_MAX_AGE_DAYS).
+    if latest_news or fixture:
+        max_age = FIXTURE_MAX_AGE_DAYS if fixture else LATEST_NEWS_MAX_AGE_DAYS
         recent_results = []
         for res in candidate_results:
             age = _search_result_age_days(res)
-            if age is not None and age <= LATEST_NEWS_MAX_AGE_DAYS:
+            if age is not None and age <= max_age:
                 recent_results.append(res)
             else:
                 reason = "no publish date" if age is None else f"{age} days old"
-                print(f"Dropping {res['url']} - {reason}, too old for a latest-news question")
+                print(f"Dropping {res['url']} - {reason}, too old for a {'next-match' if fixture else 'latest-news'} question")
         candidate_results = recent_results
         if not candidate_results:
             print("No results recent enough for a latest-news question; using no web context.")
@@ -771,6 +823,15 @@ def classify_and_build_query(user_question: str) -> dict:
 KB_COVERAGE = ("full", "partial", "none")
 
 
+def _kb_context_ages(context):
+    """Ages in days of the recent Run of Play articles in a context, from
+    their "[RUN OF PLAY CONTEXT - published ..., N days ago]" labels."""
+    return [
+        0 if when == "today" else int(days)
+        for when, days in re.findall(r"\[RUN OF PLAY CONTEXT - published [^,\]]*, (today|(\d+) days? ago)", context or "")
+    ]
+
+
 def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
     """
     How much of the answer Run of Play's retrieved articles hold as of today -
@@ -788,6 +849,13 @@ def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
         # it can't hold the current answer, and flash-lite kept rating such
         # sets "partial" (a 55-day-old result for "what's next in the title race").
         _log_query("kb_coverage", {"coverage": "none", "reason": "latest-news question, no Run of Play article from the last 30 days"})
+        return "none"
+    if _is_fixture_question(question, search_query) and not any(
+        age <= FIXTURE_MAX_AGE_DAYS for age in _kb_context_ages(context)
+    ):
+        # A preview from a week or two ago is about a match that's been
+        # played, and could otherwise be judged to answer "next match" in full.
+        _log_query("kb_coverage", {"coverage": "none", "reason": f"next-match question, no Run of Play article from the last {FIXTURE_MAX_AGE_DAYS} days"})
         return "none"
     prompt = build_relevance_check_prompt(question, search_query or question, context, date.today())
     try:

@@ -173,7 +173,8 @@ def rubric(case, answer):
     """flash-lite judge, temperature 0. Returns ({criterion: 1-5}, note)."""
     history = "\n".join(f"{t['role']}: {t['content']}" for t in case.get("history", [])) or "(none)"
     expect = case.get("expect", {})
-    facts = ", ".join(expect.get("answer_contains_all", []) + expect.get("answer_contains_any", [])[:1]) or "(none given)"
+    facts = ", ".join(expect.get("answer_contains_all", []) + expect.get("answer_contains_any", [])[:1]
+                      + expect.get("facts", [])) or "(none given)"
     prompt = f"""You are grading a football chatbot's answer. Today is {date.today()}. The chatbot reads news from after your training data, so treat every name, score, date and event in the answer as true, even ones you have never heard of - you are grading how well it answers, not whether the facts are right.
 
 Question: {case['question']}

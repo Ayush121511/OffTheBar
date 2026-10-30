@@ -107,7 +107,9 @@ Every `expect` key is optional; string checks are case-insensitive:
 `kb_title_any`, `coverage_in`, `path_in`, `answer_contains_all`,
 `answer_contains_any`, `answer_excludes`, `web_soccer_only` (run the web search
 as Phase 2 would; fail on any American football in what the answer would see),
-`web_query_includes` (the query sent to Bing News). `history` turns are
+`web_query_includes` (the query sent to Bing News), `facts` (confirmed facts
+handed to the rubric judge, which otherwise grades from its own out-of-date
+memory). `history` turns are
 `{"role": "user" | "model", "content": ...}`.
 
 ## Caveats
