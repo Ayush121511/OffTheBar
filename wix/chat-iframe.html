@@ -17,9 +17,9 @@
     --stopbar-h: 0px;
 
     /* stop button theme (overridable by parent via set-theme-vars) */
-    --stop-bg: #f5f5f5;
+    --stop-bg: #fff;
     --stop-border:#e6e6e6;
-    --stop-text:#111;
+    --stop-text:#121212;
     --stop-bg-hover:#ececec;
     --stop-border-hover:#dcdcdc;
   }
@@ -99,21 +99,30 @@
     display:flex;
     justify-content: flex-end;
   }
+  /* Same pill as the follow-up suggestions */
   #stopBtn {
     appearance: none;
-    border-radius: 999px;
-    padding: 8px 14px;
-    font: 500 14px/1 var(--font);
-    border: 1px solid var(--stop-border);
-    background: var(--stop-bg);
+    align-items: center;
+    gap: 8px;
+    font: 400 14px/1.35 var(--font);
     color: var(--stop-text);
+    background: var(--stop-bg);
+    border: 1px solid var(--stop-border);
+    border-radius: 999px;
+    padding: 7px 14px;
     cursor: pointer;
+    transition: background-color .15s ease, border-color .15s ease;
     display: none; /* shown only while streaming */
   }
-  #stopBtn:hover {
-    background: var(--stop-bg-hover);
-    border-color: var(--stop-border-hover);
+  #stopBtn::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    background: currentColor;
   }
+  #stopBtn:hover { background: var(--stop-bg-hover); border-color: var(--stop-border-hover); }
+  #stopBtn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
   /* Blurred footer (kept) */
   .blank-footer {
@@ -177,7 +186,7 @@
 
   /* The Run of Play articles an answer drew on, at its end */
   .otb-sources { margin-top: 12px; font-size: 0.88em; display: flex; flex-direction: column; gap: 3px; }
-  .otb-sources-label { color: var(--muted); }
+  .otb-sources-label { color: #000; font-weight: 700; font-size: 16px; }
   .otb-source { color: var(--text); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
   .otb-source:hover { color: var(--muted); }
 </style>
@@ -189,7 +198,7 @@
 
   <div class="stopbar" id="stopbar">
     <div class="stopbar-inner">
-      <button id="stopBtn" title="Stop generating">■ Stop</button>
+      <button id="stopBtn" title="Stop generating">Stop</button>
     </div>
   </div>
 

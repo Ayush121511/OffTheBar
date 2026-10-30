@@ -10,7 +10,7 @@ Project `runofplay` (number `607277832880`), region `asia-south1`.
 
 | Resource | What it is | State |
 |---|---|---|
-| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00009-7kt` (deployed 2026-10-31), 100% traffic. Public (`allUsers` invoker). `--max-instances 2`, no minimum instances: the chat pages wake it with `GET /api/warm` on load. |
+| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00010-4th` (deployed 2026-10-31), 100% traffic. Public (`allUsers` invoker). `--max-instances 2`, no minimum instances: the chat pages wake it with `GET /api/warm` on load. |
 | `offthebar-football-data` (job) | `python football_data.py` on the same image | Every 6 hours, Cloud Scheduler job `offthebar-football-data-6h`. See step 7. |
 | `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | Healthy since 2026-10-31, on the same image as `offthebar-api`. Failed every run from 2026-10-08 to 2026-10-30 (Hugging Face `402 Payment Required`; embeddings are now computed locally). Reads and writes the knowledge store in Cloud Storage. |
 | `offthebar-ingest-kb-daily` (Cloud Scheduler) | triggers the job at `0 4 * * *` UTC | Enabled. |
@@ -249,6 +249,11 @@ curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
   -d '{"jailbreak": true, "meta": {"content": {"conversation": [], "parts": [{"content": "hi"}]}}}'
 ```
+
+Gemini keys: `offthebar-ingest-kb` runs on the separate free key alone (secret
+`GEMINI_DATA_API_KEY`, mapped to `GEMINI_API_KEY`, with `GEMINI_FREE_TIER_KEYS=1`),
+so ingestion never spends on the paid key: anything past its quota is retried
+the next day. `offthebar-api` keeps key 2 first with the paid key as fallback.
 
 ### 7. Football data (`FOOTBALL_DATA_STORE`)
 
