@@ -124,6 +124,8 @@ def build_first_draft_instruction() -> str:
     return """
 Context status: partial first draft.
 
+First decide: does the reference material, or this conversation so far, hold at least part of the answer to this exact question as it stands today? Older material on the same team or player that the question has moved past does not count - last season's table when asked about this season's title race, a January fitness doubt when asked how last week's match went, a match preview when asked for the result. If nothing counts, reply with exactly NO_RELEVANT_CONTEXT and nothing else - a fresh search will answer instead. If something does, write the draft from it:
+
 Instructions:
 - Give a short provisional answer only.
 - Mention only the most important supported points.
@@ -132,7 +134,7 @@ Instructions:
 - Keep it under 60 words, including any staleness caveat.
 - Stay consistent with your earlier answers in this conversation: if the reference material is older than something already established here, go with what's established.
 - If context is marked ARCHIVE or outdated, note its date in one short phrase (e.g. "back in July") and move straight to the best answer you can still give - do not explain the staleness at length.
-- Never answer with nothing. If the context holds only older pieces, or none at all, give the most useful background you have (from the context, or general football knowledge for non-time-sensitive points). Never invent recent results, stats, or quotes to fill the gap.
+- Never invent recent results, stats, or quotes to fill a gap.
 - Don't promise an update or say you're checking for more - the interface already shows that, and this draft may turn out to be the whole answer, so it must stand on its own.
 - Even at this length, include one real turn of phrase - a metaphor, a bit of rhythm, a wink of wit - not just the facts stated plainly. This is a draft, not the full performance, but it must still sound like Off The Bar and not like a search result.
 """.strip()
@@ -176,6 +178,29 @@ Task:
 """.strip()
 
 
+def build_relevance_check_prompt(question: str, search_query: str, context: str, today: date) -> str:
+    return f"""
+Today is {today}.
+
+A football fan asked: "{question}"
+(Resolved search terms: "{search_query}")
+
+Below are excerpts from The Run of Play's articles, each labeled with its publish date. How much of the answer to this question, as it stands today, do they hold?
+
+- "full": they answer the whole question, and if it's about recent events they're recent enough (compare their dates with today) that nothing newer is likely to change the answer.
+- "partial": they hold a real piece of the answer but not all of it, or newer developments are likely. E.g. his farewell match three weeks ago, for "how has Messi been playing recently" - one recent performance, maybe not the latest.
+- "none": nothing in them answers the question. That includes material from before the event asked about (a match preview when the result is asked), overtaken material (last season's table for this season's race, an old injury for current fitness), and general background that doesn't address the question.
+Evergreen questions (history, rules, careers, tactics) can be answered by articles of any age.
+
+Reply with JSON only: {{"coverage": "full" or "partial" or "none", "reason": "<one short sentence>"}}
+
+Excerpts:
+\"\"\"
+{context}
+\"\"\"
+""".strip()
+
+
 def build_search_classifier_prompt(user_question: str, today: date) -> str:
     current_season = _season_label(today)
     previous_season = _season_label(today, offset=-1)
@@ -189,6 +214,7 @@ Task 1:
 Decide whether fresh internet search is required.
 - Return true for current-season stats, fixtures, results, injuries, transfers, live updates, recent quotes, or breaking news.
 - Return true for future participation questions such as whether a player will play in an upcoming tournament.
+- Return true for who won, holds or leads an award, trophy or title when no year or season is given ("Who won the Ballon d'Or?", "Who's top of the league?"): that means the latest one, which may have just changed.
 - If the question is a follow-up with pronouns like he, his, they, or the club, resolve them from the provided previous user questions.
 - Return false for stable rules, definitions, or evergreen history.
 - Return false for video-game questions (FIFA, EA FC, eFootball, PES, Ultimate Team, Career Mode, or similar) - formations, player instructions, tactics setups, "my team"/"my squad"/"my formation" questions, comparing in-game approaches. These are about game mechanics and strategy, not real-world events, even when they name real current players (a player's name appearing does not make it a news question - the question is about the game, not the player's real-world situation).

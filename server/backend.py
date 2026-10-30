@@ -20,7 +20,7 @@ from prompt_templates import (
     build_first_draft_instruction,
     build_refinement_prompt,
 )
-from ragwithsearch import ask_from_llm, error_messages
+from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage
 
 # Streamed as "## HALFTIME!!! <status>" between Phase 1 and Phase 2. The
 # clients (wix/offthebar-page.js, client/js/chat.js) show only the status, as a
@@ -29,6 +29,11 @@ from ragwithsearch import ask_from_llm, error_messages
 # they look for - keep it, or older embeds show the raw line.
 HALFTIME_MARKER = "## HALFTIME!!! "
 NO_NEW_UPDATES = "NO_NEW_UPDATES"   # Phase 2's "nothing to add" reply (prompt_templates.build_refinement_prompt)
+# Phase 1's reply when Run of Play's articles hold nothing that answers the
+# question (prompt_templates.build_first_draft_instruction): instead of a
+# draft built on stale material, the answer goes straight to the web search
+# and one combined answer.
+NO_RELEVANT_CONTEXT = "NO_RELEVANT_CONTEXT"
 HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
 # Phase 1 is a ~60-word draft, so Gemini 2.5 Flash's default thinking mostly
 # adds cost (billed as output) and delays the first visible word: measured 676
@@ -81,11 +86,18 @@ def _build_llm_query(conversation_history: List[Dict[str, str]], latest_question
     )
 
 
-def _without_no_new_updates(pieces: Iterable[str]) -> Iterable[str]:
+def _without_sentinel(
+    pieces: Iterable[str],
+    sentinel: str,
+    found: Optional[List[bool]] = None,
+    keep_rest: bool = True,
+) -> Iterable[str]:
     """
-    Pass Phase 2's streamed text through as it arrives, holding back only the
-    start until it can't be the NO_NEW_UPDATES sentinel, which must never
-    reach the user. (Phase 2 used to be collected whole and sent in one piece
+    Pass streamed text through as it arrives, holding back only the start
+    until it can't be `sentinel` (NO_NEW_UPDATES, NO_RELEVANT_CONTEXT), which
+    must never reach the user. If the text does start with it, `found` gets
+    True appended, and whatever follows the sentinel is yielded only when
+    `keep_rest`. (Phase 2 used to be collected whole and sent in one piece
     for this check, so the update appeared all at once.)
     """
     pending: Optional[str] = ""
@@ -95,19 +107,19 @@ def _without_no_new_updates(pieces: Iterable[str]) -> Iterable[str]:
             continue
         pending += piece
         head = pending.lstrip()
-        if NO_NEW_UPDATES.startswith(head) or head.startswith(NO_NEW_UPDATES):
+        if sentinel.startswith(head) or head.startswith(sentinel):
             continue
         yield pending
         pending = None
 
     if pending is not None:
         rest = pending.strip()
-        if rest.startswith(NO_NEW_UPDATES):
-            rest = rest[len(NO_NEW_UPDATES):].strip()
+        if rest.startswith(sentinel):
+            if found is not None:
+                found.append(True)
+            rest = rest[len(sentinel):].strip() if keep_rest else ""
         if rest:
             yield rest
-        else:
-            print("Phase 2 had no new updates (or no text); nothing to add.")
 
 
 def _to_gemini_role(role: str) -> str:
@@ -246,67 +258,76 @@ class Backend_Api:
                 for msg in extra + [entry for entry in conversation_history if entry["role"] != "system"]
             ]
 
-            def contents_with(instruction: str) -> List[Dict[str, Any]]:
-                answer_turn = build_answer_turn(news_content, prompt["content"], instruction)
+            def contents_with(instruction: str, context: Optional[str] = None) -> List[Dict[str, Any]]:
+                answer_turn = build_answer_turn(
+                    news_content if context is None else context, prompt["content"], instruction
+                )
                 return history_turns + [{"role": "user", "parts": [{"text": answer_turn}]}]
 
-            # === Fast path: if no search is required, stream immediately (complete context) ===
-            if not search_required:
+            def stream_gemini_flash_fast(
+                convo: List[Dict[str, Any]],
+                err_msgs: List[str],
+            ) -> Iterable[bytes]:
+                """
+                Stream a complete, single-phase answer: the fast path's, and the
+                combined answer when Phase 1 found nothing relevant.
 
-                def stream_gemini_flash_fast(
-                    convo: List[Dict[str, Any]],
-                    err_msgs: List[str],
-                ) -> Iterable[bytes]:
-                    """
-                    Stream a single-phase response from Gemini using the complete context.
+                Args:
+                    convo: The conversation history formatted for Gemini.
+                    err_msgs: A list of fallback error messages to use on failure.
 
-                    Args:
-                        convo: The conversation history formatted for Gemini.
-                        err_msgs: A list of fallback error messages to use on failure.
+                Yields:
+                    UTF-8 encoded bytes chunks of the response.
+                """
+                try:
+                    model_name = "gemini-2.5-flash"
 
-                    Yields:
-                        UTF-8 encoded bytes chunks of the response.
-                    """
-                    try:
-                        model_name = "gemini-2.5-flash"
-
-                        def _call_complete_context(client):
-                            return client.models.generate_content_stream(
-                                model=model_name,
-                                contents=convo,
-                                config=genai_types.GenerateContentConfig(
-                                    system_instruction=system_message,
-                                    max_output_tokens=2100,
-                                    temperature=0.5,
-                                    top_p=0.5,
-                                    safety_settings=GEMINI_SAFETY_SETTINGS,
-                                ),
-                            )
-
-                        response = call_gemini_with_key_retry(
-                            model_name,
-                            _call_complete_context,
-                            streaming=True,
+                    def _call_complete_context(client):
+                        return client.models.generate_content_stream(
+                            model=model_name,
+                            contents=convo,
+                            config=genai_types.GenerateContentConfig(
+                                system_instruction=system_message,
+                                max_output_tokens=2100,
+                                temperature=0.5,
+                                top_p=0.5,
+                                safety_settings=GEMINI_SAFETY_SETTINGS,
+                            ),
                         )
 
-                        for chunk in response:
-                            try:
-                                finish_reason = _extract_finish_reason(chunk)
-                                if finish_reason:
-                                    print(f"Gemini finish reason (complete-context): {finish_reason}")
-                                chunk_text = _extract_text(chunk)
-                                if chunk_text:
-                                    yield chunk_text.encode("utf-8")
-                            except GeneratorExit:
-                                break
-                            except Exception as exc:
-                                print(f"Error streaming chunk: {exc}")
-                                yield random.choice(err_msgs).encode("utf-8")
-                                break
+                    response = call_gemini_with_key_retry(
+                        model_name,
+                        _call_complete_context,
+                        streaming=True,
+                    )
 
-                    except Exception as e:
-                        print(f"Error during Gemini API call: {e}")
-                        yield random.choice(err_msgs).encode("utf-8")
+                    for chunk in response:
+                        try:
+                            finish_reason = _extract_finish_reason(chunk)
+                            if finish_reason:
+                                print(f"Gemini finish reason (complete-context): {finish_reason}")
+                            chunk_text = _extract_text(chunk)
+                            if chunk_text:
+                                yield chunk_text.encode("utf-8")
+                        except GeneratorExit:
+                            break
+                        except Exception as exc:
+                            print(f"Error streaming chunk: {exc}")
+                            yield random.choice(err_msgs).encode("utf-8")
+                            break
+
+                except Exception as e:
+                    print(f"Error during Gemini API call: {e}")
+                    yield random.choice(err_msgs).encode("utf-8")
+
+            # When fresh news matters, a quick check of how much of the answer
+            # the Run of Play articles hold picks the path: "full" -> answer from
+            # them alone; "partial" -> draft from them, then the web update;
+            # "none" -> no draft, one answer from the web search plus them.
+            kb_coverage = judge_kb_coverage(prompt["content"], formatted_query, news_content) if search_required else None
+
+            # === Fast path: no search needed, or the articles cover it (complete context) ===
+            if not search_required or kb_coverage == "full":
 
                 def generate_fast() -> Iterable[bytes]:
                     """Flask generator: stream the fast single-phase answer."""
@@ -374,7 +395,7 @@ class Backend_Api:
                             if chunk_text:
                                 yield chunk_text
 
-                    for piece in _without_no_new_updates(texts()):
+                    for piece in _without_sentinel(texts(), NO_NEW_UPDATES):
                         yield piece.encode("utf-8")
 
                 except Exception as exc:
@@ -438,6 +459,52 @@ class Backend_Api:
                         ),
                     )
 
+                def phase1_texts() -> Iterable[str]:
+                    for chunk in response:
+                        try:
+                            finish_reason = _extract_finish_reason(chunk)
+                            if finish_reason:
+                                print(f"Gemini finish reason (phase-1): {finish_reason}")
+                            chunk_text = _extract_text(chunk)
+                            if chunk_text:
+                                yield chunk_text
+                        except Exception as exc:
+                            print(chunk)
+                            print(exc)
+
+                def fetch_latest_context() -> Optional[str]:
+                    try:
+                        print("Fetching latest news content...")
+                        latest, _, _ = ask_from_llm(
+                            "",
+                            _build_llm_query(conversation_history, prompt["content"]),
+                            news_content,
+                            formatted_query,
+                            force_search=True,
+                        )
+                        print("Fetched latest news content")
+                        return latest
+                    except Exception as exc:
+                        print(exc)
+                        print("Error fetching latest news content, using default context.")
+                        return None
+
+                def combined_answer() -> Iterable[bytes]:
+                    # No draft: the status line shows straight away, then one
+                    # answer from Run of Play's articles and the web together.
+                    yield (HALFTIME_MARKER + random.choice(phase2_statuses) + "\n\n").encode("utf-8")
+                    latest = fetch_latest_context()
+                    combined = "\n\n".join(part for part in (news_content, latest) if part)
+                    yield from stream_gemini_flash_fast(
+                        contents_with(build_complete_context_instruction(), combined),
+                        error_messages,
+                    )
+
+                if kb_coverage == "none":
+                    print("Run of Play context doesn't answer the question - skipping the draft, searching, then one combined answer.")
+                    yield from combined_answer()
+                    return
+
                 try:
                     response = call_gemini_with_key_retry(
                         "gemini-2.5-flash", _call_phase1, streaming=True
@@ -448,48 +515,27 @@ class Backend_Api:
                     return
 
                 initial_response = ""
+                nothing_relevant: List[bool] = []
                 print("=== Phase 1 starting ===")
+                for piece in _without_sentinel(
+                    phase1_texts(), NO_RELEVANT_CONTEXT, found=nothing_relevant, keep_rest=False
+                ):
+                    initial_response += piece
+                    yield piece.encode("utf-8")
 
-                for chunk in response:
-                    try:
-                        finish_reason = _extract_finish_reason(chunk)
-                        if finish_reason:
-                            print(f"Gemini finish reason (phase-1): {finish_reason}")
-                        chunk_text = _extract_text(chunk)
-                        if chunk_text:
-                            initial_response += chunk_text
-                            yield chunk_text.encode("utf-8")
-                    except GeneratorExit:
-                        # yield "\n\n ##Sharing further insights...\n\n".encode("utf-8")
-                        break
-                    except Exception as exc:
-                        print(chunk)
-                        print(exc)
-                        continue
+                if nothing_relevant or not initial_response.strip():
+                    print("Phase 1 flagged nothing relevant - searching, then one combined answer.")
+                    yield from combined_answer()
+                    return
 
                 yield "\n\n".encode("utf-8")
                 yield (HALFTIME_MARKER + random.choice(phase2_statuses) + "\n\n").encode("utf-8")
-
 
                 print("Initial response received from Gemini API.")
                 print("Waiting for latest context (Phase 2)...")
 
                 # Phase 2: Attempt to fetch updated context via ask_from_llm
-                news_content_latest: Optional[str] = None
-                try:
-                    print("Fetching latest news content...")
-                    news_content_latest, _, _ = ask_from_llm(
-                        "",
-                        _build_llm_query(conversation_history, prompt["content"]),
-                        news_content,
-                        formatted_query,
-                        force_search=True,
-                    )
-                    print("Fetched latest news content")
-                except Exception as exc:
-                    print(exc)
-                    print("Error fetching latest news content, using default context.")
-                    news_content_latest = None
+                news_content_latest = fetch_latest_context()
 
                 # If updated context exists, continue streaming a refined answer
                 if news_content_latest:

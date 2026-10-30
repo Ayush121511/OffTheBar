@@ -186,13 +186,8 @@ def _published_label(result):
     return f"{published_on} ({_days_ago(age)})"
 
 
-# Run of Play chunks per answer, and when one is close and recent enough
-# (Pinecone cosine and age) to answer without a web search. Latest-news
-# questions need a very recent article for that.
+# Run of Play chunks per answer.
 KB_TOP_K = 4
-KB_FRESH_SCORE = 0.7
-KB_FRESH_DAYS = 30
-KB_FRESH_DAYS_LATEST_NEWS = 7
 
 # Web results per answer: scraped in full, then headline + snippet only.
 WEB_SCRAPED_SOURCES = 2
@@ -253,18 +248,8 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             hits = []
         if hits:
             kb_context = "\n\n".join(_format_kb_hit(hit) for hit in hits)
-            fresh_days = KB_FRESH_DAYS_LATEST_NEWS if latest_news else KB_FRESH_DAYS
-            if any(
-                (hit["dense"] or 0) >= KB_FRESH_SCORE
-                and hit["age_days"] is not None
-                and hit["age_days"] <= fresh_days
-                for hit in hits
-            ):
-                print("Using Run of Play context only - a close, recent article covers it")
-                return kb_context, False, formatted_query
-            # Older or looser matches still give the first draft something
-            # to work with; Phase 2 searches the web for anything newer.
-            print("Run of Play context is background only" + (" - web search left to Phase 2" if search_required else ""))
+            # Whether these articles are enough on their own is the backend's
+            # call (judge_kb_coverage); the web search is left to Phase 2.
             return kb_context, search_required, formatted_query
     else:
         _log_query("pinecone_skipped", "fallback context was supplied")
@@ -434,7 +419,7 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
 import json
 
 from gemini_utils import call_gemini_with_key_retry
-from prompt_templates import build_search_classifier_prompt
+from prompt_templates import build_relevance_check_prompt, build_search_classifier_prompt
 
 
 def _has_marker(text: str, markers: list[str]) -> bool:
@@ -636,6 +621,38 @@ def classify_and_build_query(user_question: str) -> dict:
         print(exc)
         print("Gemini query classification failed, falling back to heuristic classification.")
         return heuristic_result
+
+KB_COVERAGE = ("full", "partial", "none")
+
+
+def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
+    """
+    How much of the answer Run of Play's retrieved articles hold as of today -
+    "full", "partial" or "none" - judged by gemini-2.5-flash-lite. The backend
+    answers from them alone on "full", drafts from them and adds the web
+    update on "partial", and on "none" skips the draft (which used to linger
+    on stale material before the web update contradicted it) for one answer
+    from the web search plus these articles. "partial" whenever the check
+    fails, so the draft-then-update flow stays the default.
+    """
+    if not (context or "").strip():
+        return "none"
+    prompt = build_relevance_check_prompt(question, search_query or question, context, date.today())
+    try:
+        response = call_gemini_with_key_retry(
+            "gemini-2.5-flash-lite",
+            lambda client: client.models.generate_content(
+                model="gemini-2.5-flash-lite", contents=prompt
+            ),
+        )
+        verdict = _best_effort_json(response.text)
+    except Exception as exc:
+        print(f"Run of Play coverage check failed, assuming partial: {exc}")
+        return "partial"
+    coverage = str(verdict.get("coverage", "")).lower()
+    _log_query("kb_coverage", {"coverage": coverage, "reason": verdict.get("reason")})
+    return coverage if coverage in KB_COVERAGE else "partial"
+
 
 def ask_from_llm(token,query, fallback_context=None, formatted_query = None, force_search=False):
     print("Hello query")
