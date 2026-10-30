@@ -24,7 +24,7 @@ import urllib.robotparser
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from config_env import require_env
-from kb_search import hybrid_search, iso_age_days, known_tags
+from kb_search import article_url, hybrid_search, iso_age_days, known_tags
 from rank_bm25 import BM25Okapi
 from nltk.tokenize import word_tokenize
 from nltk.tokenize import sent_tokenize
@@ -172,35 +172,68 @@ def _soccer_search_query(query):
     return " ".join(re.sub(r"\bfootball\b", "Premier League", query, flags=re.I).split())
 
 
+def _finished_entries(text):
+    """The complete {"n": ...} entries of a JSON reply that stopped part-way."""
+    entries = []
+    for raw in re.findall(r'\{"n":\s*\d+(?:[^{}"]|"(?:[^"\\]|\\.)*")*\}', text or ""):
+        try:
+            entries.append(json.loads(raw))
+        except ValueError:
+            continue
+    return entries
+
+
 def _keep_soccer_results(question, results):
     """The results about association football, judged by gemini-2.5-flash-lite
-    from their site, headline and snippet. If that check fails, only results
-    that name soccer outright are kept - never the uncertain ones."""
+    from their site, date, headline and snippet, each marked with what that
+    same call found (result["check"]: kind, event_date, facts). If the call
+    fails, only results that name soccer outright are kept, unmarked - never
+    the uncertain ones."""
     if not results:
         return results
-    listing = "\n".join(
-        f"{n}. [{urlparse(r.get('url', '')).hostname or ''}] {r.get('title', '')} - {(r.get('content') or '')[:200]}"
-        for n, r in enumerate(results, 1)
-    )
-    prompt = build_soccer_results_prompt(question, listing)
+    lines = []
+    for n, r in enumerate(results, 1):
+        age = _search_result_age_days(r)
+        published = (date.today() - timedelta(days=age)).isoformat() if age is not None else "unknown"
+        lines.append(f"{n}. [{urlparse(r.get('url', '')).hostname or ''}] {published} | {r.get('title', '')} - {(r.get('content') or '')[:200]}")
+    prompt = build_soccer_results_prompt(question, "\n".join(lines), date.today())
     try:
         response = call_gemini_with_key_retry(
             "gemini-2.5-flash-lite",
             lambda client: client.models.generate_content(
-                model="gemini-2.5-flash-lite", contents=prompt, config=DECISION_CONFIG
+                model="gemini-2.5-flash-lite", contents=prompt, config=SOCCER_CHECK_CONFIG
             ),
         )
         verdict = _best_effort_json(response.text)
-        if not isinstance(verdict.get("keep"), list):
-            raise ValueError(f"no keep list in {response.text!r}")
-        keep = {int(n) for n in verdict["keep"]}
+        entries = verdict.get("results") if isinstance(verdict, dict) else verdict
+        cut_off = not isinstance(entries, list) or not entries
+        if cut_off:
+            entries = _finished_entries(response.text)
+            finish = getattr((response.candidates or [None])[0], "finish_reason", None)
+            print(f"Soccer check reply cut off ({finish}): {len(entries)} finished entries of {len(results)}")
+        if not entries:
+            raise ValueError(f"no results list in {response.text!r}")
+        kept = {int(entry["n"]): entry for entry in entries if entry.get("keep")}
+        if cut_off:
+            judged = {int(entry["n"]) for entry in entries}
+            kept.update({
+                n: {} for n, r in enumerate(results, 1)
+                if n not in judged and _names_soccer(f"{r.get('title', '')} {r.get('content', '')}")
+            })
     except Exception as exc:
         print(f"Soccer check failed, keeping only results that name soccer: {exc}")
-        keep = {n for n, r in enumerate(results, 1) if _names_soccer(f"{r.get('title', '')} {r.get('content', '')}")}
+        kept = {n: {} for n, r in enumerate(results, 1) if _names_soccer(f"{r.get('title', '')} {r.get('content', '')}")}
     for n, r in enumerate(results, 1):
-        if n not in keep:
+        if n not in kept:
             print(f"Dropping {r['url']} - not association football")
-    return [r for n, r in enumerate(results, 1) if n in keep]
+    return [dict(r, check=kept[n]) for n, r in enumerate(results, 1) if n in kept]
+
+
+def _name_endings(query):
+    """The last word of each capitalised name in a search query: "Lino" of
+    "Samuel Lino", "United" of "Manchester United"."""
+    names = re.findall(r"[A-Z\u00c0-\u00de][\w'\u2019-]*(?:\s+[A-Z\u00c0-\u00de][\w'\u2019-]*)*", query or "")
+    return set().union(*(_word_tokens(name.split()[-1]) for name in names)) - RELEVANCE_STOPWORDS - NOT_NAME_ENDINGS if names else set()
 
 
 def _word_tokens(text):
@@ -228,7 +261,7 @@ LATEST_NEWS_MARKERS = [
     "what's next", "whats next", "next match", "next game", "upcoming", "title race", "standings",
     # slang for the same ("yo whats good with united rn")
     "rn", "what's good", "whats good", "what's happening", "whats happening",
-    "going on", "what's up", "whats up", "getting on",
+    "going on", "what's up", "whats up", "getting on", "this year",
 ]
 
 
@@ -245,11 +278,15 @@ FIXTURE_MARKERS = [
     "starting xi", "team news", "preview", "play next", "playing next", "face next",
     "kick-off", "kick off",
 ]
+# Who matters in a coming match: without a line-up in the material the answer
+# names players from the model's memory ("Gabriel Martinelli", long gone).
+MATCHUP_PLAYER_MARKERS = ["key player", "key players", "who starts", "who will start", "players to watch", "danger man"]
 # Words that describe the fixture rather than name the club - as search terms
 # they pulled in other clubs' previews ("Barcelona upcoming fixture predicted
 # XI" over the last week: Nice, Le Havre, Deportivo), while "Barcelona preview"
 # and "Barcelona predicted lineup" found the Alavés previews.
 FIXTURE_QUERY_NOISE = {
+    "key", "player", "players", "versus", "else", "might", "be",
     "upcoming", "next", "fixture", "fixtures", "match", "game", "predicted", "xi", "lineup",
     "line-up", "line", "up", "starting", "team", "news", "preview", "play", "playing", "face",
     "kick-off", "kick", "off", "this", "weekend", "their", "the", "what", "who", "when", "is",
@@ -261,7 +298,9 @@ def _is_fixture_question(question, formatted_query):
     """Asks about the next match - unless the question names a past year
     ("Barcelona's lineup in the 2009 final")."""
     past_year = any(int(year) < date.today().year for year in re.findall(r"\b(?:19|20)\d{2}\b", question or ""))
-    return not past_year and _has_marker(f"{question or ''} {formatted_query or ''}".lower(), FIXTURE_MARKERS)
+    text = f"{question or ''} {formatted_query or ''}".lower()
+    matchup = _has_marker(text, MATCHUP_PLAYER_MARKERS) and _has_marker(text, ["against", "vs", "versus"])
+    return not past_year and (matchup or _has_marker(text, FIXTURE_MARKERS))
 
 
 def _fixture_search_query(query):
@@ -274,14 +313,34 @@ def _fixture_search_query(query):
 
 def _is_latest_news_question(question, formatted_query):
     """True when the question asks for latest news, by its wording or by the
-    classifier having pinned today's date into the search query."""
+    classifier having read it that way: a date from the last month, this
+    season's label or "recent" in the search query."""
     return (
         _has_marker((question or "").lower(), LATEST_NEWS_MARKERS)
-        or date.today().isoformat() in (formatted_query or "")
+        or _names_recent_date(formatted_query)
+        or _season_label(date.today()) in (formatted_query or "")
+        or _has_marker((formatted_query or "").lower(), ["recent"])
     )
 
 
+def _names_recent_date(text):
+    for found in ISO_DATE.findall(text or ""):
+        try:
+            if abs((date.today() - date.fromisoformat(found)).days) <= LATEST_NEWS_MAX_AGE_DAYS:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+# time_range already keeps latest-news searches current. In the query the season
+# narrows Bing News to fixture pages: "Vincent Kompany injury status 2026-27"
+# found a match blog, without it news from hours earlier.
+SEASON_LABEL = re.compile(r"\b20\d{2}[-/](?:20)?\d{2}\b")
+# "stats" pulls Bing News to American sports: "Samuel Lino season performance
+# stats" found baseball pages, without it his club news.
+STATS_WORD = re.compile(r"\b(?:stats?|statistics)\b", re.I)
 
 
 def _strip_iso_dates(text):
@@ -329,8 +388,8 @@ def _published_label(result):
     age = _search_result_age_days(result)
     if age is None:
         return "unknown - do not assume this is recent"
-    published_on = (date.today() - timedelta(days=age)).isoformat()
-    return f"{published_on} ({_days_ago(age)})"
+    published_on = date.today() - timedelta(days=age)
+    return f"{published_on.isoformat()} ({_days_ago(age)}{_season_note(published_on.isoformat())})"
 
 
 # Run of Play chunks per answer.
@@ -354,26 +413,116 @@ def _scrape_blocked(url):
     return any(host == domain or host.endswith("." + domain) for domain in SCRAPE_BLOCKED_DOMAINS)
 
 
+# Pre-match pieces, by headline; a word like "predictions" is left to the
+# soccer check, since "Serie A predictions: Inter backed to retain their crown"
+# is a season forecast, not a match preview. "what's up with atletico" read previews of a
+# match already played and said they were "still hunting for their first
+# points", though they had won it 2-0. Next-match questions want these; for any
+# other question a recent one goes last, labeled, and an old one is dropped.
+PREVIEW_HEADLINE = re.compile(
+    r"\b(?:previews?|how to watch|where to watch|live ?stream(?:s|ing)?|predicted (?:xi|starting)|line-?ups?|"
+    r"betting tips|team news|tv|kick-?off)\b",
+    re.I,
+)
+
+
+def _is_preview(result):
+    """By the soccer check's reading where there is one, else by headline."""
+    kind = (result.get("check") or {}).get("kind")
+    return kind == "preview" if kind else bool(PREVIEW_HEADLINE.search(result.get("title") or ""))
+
+
+def _match_was_played(result):
+    """A preview whose event date, as the soccer check read it, has passed."""
+    try:
+        return _is_preview(result) and date.fromisoformat(str((result.get("check") or {}).get("event_date"))[:10]) < date.today()
+    except ValueError:
+        return False
+
+
+def _sort_previews(results):
+    """Reports first, recent previews last, and no preview old enough for its
+    match to have been played."""
+    kept = []
+    for res in results:
+        age = _search_result_age_days(res)
+        if _is_preview(res) and (age is None or age > FIXTURE_MAX_AGE_DAYS):
+            print(f"Dropping {res['url']} - old preview, its match has probably been played")
+        else:
+            kept.append(res)
+    return sorted(kept, key=_is_preview)
+
+
+def _news_label(result, fixture, snippet=False):
+    notes = ["headline and search snippet only"] if snippet else []
+    if _is_preview(result) and not fixture:
+        notes.append("pre-match preview, written before the match, not a result")
+    kind = (result.get("check") or {}).get("kind")
+    if kind in ("rumour", "opinion"):
+        notes.append({"rumour": "unconfirmed rumour", "opinion": "opinion piece"}[kind])
+    return f"NEWS ({'; '.join(notes)})" if notes else "NEWS"
+
+
+def _checked_lines(result):
+    """What the soccer check read from a result, for the context."""
+    check = result.get("check") or {}
+    lines = [f"Likely event date: {check['event_date']}"] if check.get("event_date") else []
+    facts = [str(fact) for fact in (check.get("facts") or [])][:2]
+    if facts:
+        lines.append("Key facts:\n" + "\n".join(f"- {fact}" for fact in facts))
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def _days_ago(age):
     if age == 0:
         return "today"
     return f"{age} day{'' if age == 1 else 's'} ago"
 
 
+def _season_note(created):
+    """", 2025-26 season" for a publish date, so an April article isn't read as
+    part of the season running now."""
+    try:
+        return f", {_season_label(date.fromisoformat((created or '')[:10]))} season"
+    except ValueError:
+        return ""
+
+
 def _format_kb_hit(hit):
     """A Run of Play chunk as context, labeled by age: anything past the
-    latest-news window is background the model must not present as current."""
+    latest-news window, or a new article about someone else, is background the
+    model must not present as current."""
     md = hit["metadata"]
     age = hit["age_days"]
     if age is None:
         label = "RUN OF PLAY ARCHIVE - publish date unknown - background only, do not present as recent"
     else:
-        published = f"published {(md.get('created') or '')[:10]}, {_days_ago(age)}"
-        if age <= LATEST_NEWS_MAX_AGE_DAYS:
+        published = f"published {(md.get('created') or '')[:10]}, {_days_ago(age)}{_season_note(md.get('created'))}"
+        if age <= LATEST_NEWS_MAX_AGE_DAYS and hit.get("on_subject", True):
             label = f"RUN OF PLAY CONTEXT - {published}"
         else:
             label = f"RUN OF PLAY ARCHIVE - {published} - background only, not current news"
-    return f"[{label}]\nArticle: {hit['title']}\n\n{md.get('chunk', '')}\n"
+    facts = md.get("facts")
+    if label.startswith("RUN OF PLAY ARCHIVE") and facts:
+        # An old article's own text says "Joao Pedro, Brighton's prolific
+        # striker" in the present tense, and answers repeated it as current.
+        # Its extracted facts say which parts still hold and date the rest.
+        return f"[{label}]\nArticle: {hit['title']}\n\n{_format_facts(facts, (md.get('created') or '')[:10] or 'publication')}\n"
+    # A recent article keeps its text, with what it says that can change spelled
+    # out, since a 25-day-old injury or line-up may already be out of date.
+    changing = _format_facts({"time_bound_facts": facts.get("time_bound_facts")}, (md.get('created') or '')[:10]) if facts else ""
+    return f"[{label}]\nArticle: {hit['title']}\n\n{md.get('chunk', '')}\n" + (f"\n{changing}\n" if changing else "")
+
+
+def _format_facts(facts, published):
+    sections = [
+        ("Lasting facts", facts.get("lasting_facts")),
+        (f"True as of {published} - may have changed since (clubs, managers, injuries, form, standings, line-ups)",
+         facts.get("time_bound_facts")),
+        (f"Still to come as of {published} - may have happened since", facts.get("scheduled_events")),
+        (f"The writer's opinions and predictions as of {published}", facts.get("opinions")),
+    ]
+    return "\n".join(f"{name}:\n" + "\n".join(f"- {item}" for item in items) for name, items in sections if items)
 
 
 def build_news_context(query, formatted_query, fallback_context=None, search_required=None):
@@ -428,6 +577,8 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     fixture = _is_fixture_question(query, formatted_query)
     _log_query("fixture_question", fixture)
     search_query = _soccer_search_query(_fixture_search_query(retrieval_query) if fixture else retrieval_query)
+    if latest_news:
+        search_query = " ".join(STATS_WORD.sub(" ", SEASON_LABEL.sub(" ", search_query)).split()) or search_query
     relevance_query = search_query
     url = f"{require_env('SEARXNG_URL').rstrip('/')}/search"
     headers = {
@@ -505,13 +656,17 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     # isn't discriminating enough - Bing itself gets confused by it. Require
     # whole-word overlap on at least 2 distinct query terms (or all of them,
     # if the query is short), ignoring filler words like "the"/"who" that
-    # junk pages match just as well.
-    query_tokens = _word_tokens(relevance_query) - RELEVANCE_STOPWORDS
+    # junk pages match just as well. A name's last word is enough alone:
+    # "Pedro and Lino shine" is about "Samuel Lino", "Lionel" isn't about "Lionel Messi".
+    # Words like "season" say nothing about who it's about, so "lino season
+    # performance" comes down to "lino" (the soccer check then judges the results).
+    query_tokens = (_word_tokens(relevance_query) - RELEVANCE_STOPWORDS - QUERY_FILLER_WORDS) or _word_tokens(relevance_query)
     min_overlap = min(2, len(query_tokens)) or 1
+    surnames = _name_endings(relevance_query)
 
     def _is_relevant(ctx):
         haystack = _word_tokens(f"{ctx.get('title', '')} {ctx.get('content', '')}")
-        return len(query_tokens & haystack) >= min_overlap
+        return len(query_tokens & haystack) >= min_overlap or bool(surnames & haystack)
 
     # No fallback to the unfiltered list: when nothing is relevant, those
     # results are exactly the junk this filter exists to keep out (adult
@@ -545,7 +700,19 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             _log_query("web_search_no_recent_results", formatted_query)
             return "", search_required, formatted_query
 
+    if not fixture:
+        candidate_results = _sort_previews(candidate_results)
+        if not candidate_results:
+            print("Only old match previews found; using no web context.")
+            _log_query("web_search_only_old_previews", formatted_query)
+            return "", search_required, formatted_query
+
     candidate_results = _keep_soccer_results(query, candidate_results)
+    for res in [res for res in candidate_results if _match_was_played(res)]:
+        print(f"Dropping {res['url']} - preview of a match already played")
+    candidate_results = [res for res in candidate_results if not _match_was_played(res)]
+    if not fixture:
+        candidate_results = _sort_previews(candidate_results)
     if not candidate_results:
         print("No association football results; using no web context.")
         _log_query("web_search_no_soccer_results", formatted_query)
@@ -595,13 +762,14 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
         print(f"Top chunks for {ctx['url']}: {len(top_chunks)}")
         # print(top_chunks[0])
         top_chunks_str = '\n\n'.join(top_chunks)
-        prompt_context.append(f"NEWS - {ctx['title']} :  {ctx['url']}\nPublished: {_published_label(ctx)}\nPage content: {page_contents.get(ctx['url'], '')} \n\n{page_metadata} {top_chunks_str}\n")
+        prompt_context.append(f"{_news_label(ctx, fixture)} - {ctx['title']} :  {ctx['url']}\nPublished: {_published_label(ctx)}\n{_checked_lines(ctx)}Page content: {page_contents.get(ctx['url'], '')} \n\n{page_metadata} {top_chunks_str}\n")
 
     for ctx in snippet_only[:WEB_SNIPPET_SOURCES]:
         print(f"Using search snippet only for {ctx['url']}")
         prompt_context.append(
-            f"NEWS (headline and search snippet only) - {ctx['title']} :  {ctx['url']}\n"
+            f"{_news_label(ctx, fixture, snippet=True)} - {ctx['title']} :  {ctx['url']}\n"
             f"Published: {_published_label(ctx)}\n"
+            f"{_checked_lines(ctx)}"
             f"Snippet: {ctx.get('content') or ctx.get('snippet', '')}\n"
         )
 
@@ -626,7 +794,17 @@ from gemini_utils import call_gemini_with_key_retry
 # Gemini's default temperature the same question flipped between runs
 # (search queries dropping "Carrick", coverage "none" vs "partial").
 DECISION_CONFIG = genai_types.GenerateContentConfig(temperature=0)
-from prompt_templates import build_relevance_check_prompt, build_search_classifier_prompt, build_soccer_results_prompt
+# Capped: flash-lite now and then loops to its 65k-token limit, and this runs
+# on every web search. A cut-off reply falls back to names-only filtering.
+SOCCER_CHECK_CONFIG = genai_types.GenerateContentConfig(
+    temperature=0, response_mime_type="application/json", max_output_tokens=3000
+)
+from prompt_templates import (
+    _season_label,
+    build_relevance_check_prompt,
+    build_search_classifier_prompt,
+    build_soccer_results_prompt,
+)
 
 
 def _has_marker(text: str, markers: list[str]) -> bool:
@@ -705,6 +883,9 @@ def _heuristic_query_classifier(user_question: str) -> dict:
     }
 
 
+LAST_ANSWER_EXCERPT_CHARS = 1200
+
+
 def _extract_primary_question(raw_query: str) -> str:
     question = (raw_query or "").strip()
     marker = "Main query to be answered:"
@@ -749,6 +930,16 @@ def _extract_previous_user_queries(raw_query: str) -> list[str]:
     return lines[-4:]
 
 
+def _last_answer_excerpt(raw_query: str) -> str:
+    """The end of the conversation's latest answer: a follow-up can point at
+    something only the answer mentioned (\"the Bayern Munich match\")."""
+    text = raw_query or ""
+    if "Context given:" not in text:
+        return ""
+    answers = text.split("Context given:", 1)[1].split("Previous Query:", 1)[0]
+    return _strip_error_noise(answers.strip())[-LAST_ANSWER_EXCERPT_CHARS:]
+
+
 def _build_contextual_question(raw_query: str) -> str:
     primary_question = _extract_primary_question(raw_query)
     previous_questions = _extract_previous_user_queries(raw_query)
@@ -756,9 +947,12 @@ def _build_contextual_question(raw_query: str) -> str:
         return primary_question
 
     previous_text = "\n".join(f"- {question}" for question in previous_questions)
+    last_answer = _last_answer_excerpt(raw_query)
+    answer_text = f"End of the last answer:\n{last_answer}\n\n" if last_answer else ""
     return (
         "Previous user questions, for resolving pronouns and follow-ups:\n"
         f"{previous_text}\n\n"
+        f"{answer_text}"
         f"Current question: {primary_question}"
     )
 
@@ -844,6 +1038,64 @@ def order_context(kb_context, web_context):
     recent = [block for block in blocks if not block.startswith("[RUN OF PLAY ARCHIVE")]
     archive = [block for block in blocks if block.startswith("[RUN OF PLAY ARCHIVE")]
     return "\n\n".join(recent + ([web_context.strip()] if web_context and web_context.strip() else []) + archive)
+
+
+RUN_OF_PLAY_SITE = "https://www.therunofplay.com/"
+# Shared names or figures that count as an answer drawing on an article. At 2,
+# "Real" and "Madrid" alone linked a Vinicius transfer piece to a Dybala answer.
+NOT_NAME_ENDINGS = {"league", "cup", "football", "soccer", "news"}
+QUERY_FILLER_WORDS = {"season", "performance", "form", "result", "results", "stats", "recent", "latest", "news"}
+SOURCE_MIN_SHARED_TERMS = 3
+# An article sharing under this share of the best article's terms only shares
+# club and player names with the answer.
+SOURCE_MIN_SHARE_OF_BEST = 0.5
+# Capitalised words that say nothing about which article an answer drew on.
+SOURCE_STOPWORDS = {
+    "january", "february", "march", "april", "may", "june", "july", "august", "september",
+    "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday", "premier", "league", "football", "club", "season", "article", "lasting",
+    "true", "still", "the", "this", "that", "they", "their", "with", "from", "after", "while",
+}
+
+
+def _source_terms(text):
+    """An article's or answer's names and figures: capitalised words and
+    numbers, accent-folded - not years, months or section labels."""
+    terms = set()
+    for word in re.findall(r"\b(?:[A-ZÀ-Þ][\w'’-]{3,}|\d[\d.,]*)", text or ""):
+        folded = " ".join(_folded_words(word))
+        if folded and folded not in SOURCE_STOPWORDS and not re.fullmatch(r"(?:19|20)\d\d", folded):
+            terms.add(folded)
+    return terms
+
+
+def run_of_play_sources(kb_context, question, answer, include_archive=True):
+    """The Run of Play articles in an answer's context that the answer drew
+    on - at least SOURCE_MIN_SHARED_TERMS of an article's names or figures,
+    ones the question didn't already contain, appear in the answer - as
+    [{"title", "url"}]. include_archive=False leaves out articles labeled ARCHIVE.
+    Only Run of Play's own pages, never web results."""
+    body = re.split(r"^[ \t]*(?:\*\*|__)?Ask next", answer or "", maxsplit=1, flags=re.M | re.I)[0]
+    answer_terms = _source_terms(body)
+    question_terms = _source_terms(question) | set(_folded_words(question))
+    sources = []
+    shared_counts = {}
+    for block in RUN_OF_PLAY_BLOCK.split(kb_context or ""):
+        title_line = re.search(r"^Article: (.+)$", block, re.M)
+        if not title_line or any(source["title"] == title_line.group(1).strip() for source in sources):
+            continue
+        if not include_archive and block.startswith("[RUN OF PLAY ARCHIVE"):
+            continue
+        title = title_line.group(1).strip()
+        # Without the age label and the facts' section headers.
+        text = "\n".join(line for line in block.splitlines()[1:] if not line.rstrip().endswith(":"))
+        url = article_url(title)
+        shared = len((_source_terms(text) - question_terms) & answer_terms)
+        if url and url.startswith(RUN_OF_PLAY_SITE) and shared >= SOURCE_MIN_SHARED_TERMS:
+            sources.append({"title": title, "url": url})
+            shared_counts[title] = shared
+    best = max(shared_counts.values(), default=0)
+    return [source for source in sources if shared_counts[source["title"]] >= best * SOURCE_MIN_SHARE_OF_BEST]
 
 
 def _kb_context_ages(context):

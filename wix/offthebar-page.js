@@ -2,6 +2,7 @@ import { marked } from 'marked';
 import wixLocation from 'wix-location';
 
 const API_URL = 'https://offthebar-api-607277832880.asia-south1.run.app/api/chat';
+const WARM_URL = 'https://offthebar-api-607277832880.asia-south1.run.app/api/warm';
 
 const USER_AVATAR = 'https://static.wixstatic.com/media/5dd29f_8946a06cf5544c1f99de458788f5b424~mv2.png';
 const BOT_AVATAR  = 'https://static.wixstatic.com/media/5dd29f_d03e44b4f7f1481ab5c12d684830a18b~mv2.jpg';
@@ -14,8 +15,15 @@ const SEND_BUSY_LABEL  = '⏸ Generating…';
 // ("Searching The Run of Play", "Searching the web", "Generating"); only the
 // latest status shows, while nothing follows it (see renderBot).
 const HALFTIME_LINES = /^##\s*HALFTIME!!!\s*(.*)$/gm;
+// After a finished answer, the Run of Play articles it drew on, as
+// "## SOURCES!!! [{"title", "url"}]" - shown as links at the end, never web pages.
+const SOURCES_LINES = /^##\s*SOURCES!!!\s*(.*)$/gm;
+const RUN_OF_PLAY_SITE = 'https://www.therunofplay.com/';
 const FIRST_STATUS = 'Searching The Run of Play';   // shown before the first chunk arrives
 const DEFAULT_STATUS = 'Generating';
+// Cloud Run's answer when every instance is full (--max-instances, see CLOUDRUN.md).
+const BUSY_STATUSES = [429, 503];
+const BUSY_MESSAGE = "*The dugout's packed right now. Give it a moment and ask again.*";
 
 // Full answers end with an "Ask next:" line and a short list of follow-up
 // prompts (the backend's prompt asks for exactly that). They're cut from the
@@ -139,6 +147,18 @@ function followUpButtons(followUps) {
 // there is one) as a quiet shimmer line with a live seconds counter
 // (.otb-status in chat-iframe.html), and goes away once text arrives or the
 // answer ends. Follow-up buttons only appear on the final render.
+function sourcesHtml(text) {
+  const line = [...text.matchAll(SOURCES_LINES)].pop();
+  if (!line) return '';
+  let sources = [];
+  try { sources = JSON.parse(line[1]); } catch (_) { return ''; }
+  const links = (Array.isArray(sources) ? sources : [])
+    .filter(s => s && typeof s.url === 'string' && s.url.startsWith(RUN_OF_PLAY_SITE))
+    .map(s => `<a class="otb-source" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>`)
+    .join('');
+  return links ? `<div class="otb-sources"><div class="otb-sources-label">From The Run of Play</div>${links}</div>` : '';
+}
+
 function renderBot(text, final = false) {
   const status = currentStatus(text);
   let { body, followUps } = splitFollowUps(stripHalftime(text));
@@ -146,11 +166,12 @@ function renderBot(text, final = false) {
   let html = md(body);
   if (status) html += statusHtml(status);
   if (final && followUps.length) html += followUpButtons(followUps);
+  if (final) html += sourcesHtml(text);
   return html;
 }
 
 function stripHalftime(text) {
-  return text.replace(HALFTIME_LINES, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text.replace(HALFTIME_LINES, '').replace(SOURCES_LINES, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // Tell chat iframe to show/hide its Stop button
@@ -183,6 +204,9 @@ function sendIframeSetup() {
 }
 
 $w.onReady(() => {
+  // Wake the backend while the visitor reads, so the first question finds it ready.
+  fetch(WARM_URL, { cache: 'no-store' }).catch(() => {});
+
   // Messages FROM the chat iframe - registered first so its handshake isn't missed
   $w('#chatHtml').onMessage((event) => {
     const d = event.data || {};
@@ -259,6 +283,7 @@ function sendToChatbot(userMessage) {
     jailbreak: true,                 // required key on the backend, value unused
     conversation_id: conversationId, // groups this chat's turns in the server-side logs
     stage_statuses: true,            // a status line per stage (see HALFTIME_LINES)
+    sources: true,                   // the Run of Play articles used (see SOURCES_LINES)
     meta: {
       content: {
         conversation: conversation.map(m => ({ role: m.role, content: m.content })),
@@ -280,6 +305,10 @@ function sendToChatbot(userMessage) {
     signal: abortCtrl.signal
   })
     .then(res => {
+      if (BUSY_STATUSES.includes(res.status)) {
+        if (isCurrent()) finishBusy();
+        return;
+      }
       if (!res.ok) throw new Error(`Bad response: ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
@@ -313,8 +342,16 @@ function sendToChatbot(userMessage) {
     .catch(err => {
       if (!isCurrent()) return;   // aborted by Stop, already finalized
       console.error('Fetch error:', err);
-      finishBot('*Something went wrong - please try again.*');
+      // Cloud Run's own "full" reply has no CORS headers, so the browser
+      // reports a failed fetch (a TypeError) instead of the 429.
+      if (err instanceof TypeError) finishBusy();
+      else finishBot('*Something went wrong - please try again.*');
     });
+}
+
+function finishBusy() {
+  conversation.pop();   // never answered, so asking again doesn't repeat it in the history
+  finishBot(BUSY_MESSAGE);
 }
 
 function startReveal() {
@@ -340,7 +377,7 @@ function revealTick() {
   const gap = text.slice(next).search(/\s/);
   next = gap === -1 ? text.length : next + gap;
   // Status lines appear in one go, never as a half-typed "## HALF...".
-  for (const status of text.matchAll(HALFTIME_LINES)) {
+  for (const status of [...text.matchAll(HALFTIME_LINES), ...text.matchAll(SOURCES_LINES)]) {
     const end = status.index + status[0].length;
     if (next > status.index && shownChars < end) next = Math.max(next, end);
   }
@@ -354,8 +391,9 @@ function revealTick() {
 // (which passes showFollowUps=false - a stopped answer's list may be cut off).
 function finishBot(fallbackMarkdown, showFollowUps = true) {
   stopReveal();
-  const finalText = stripHalftime(normalizeEscapes(lastStreamText));
-  const html = finalText ? renderBot(finalText, showFollowUps) : md(fallbackMarkdown);
+  const rawText = normalizeEscapes(lastStreamText);
+  const finalText = stripHalftime(rawText);
+  const html = finalText ? renderBot(rawText, showFollowUps) : md(fallbackMarkdown);
   postToHtml({ type: 'finalize-bot', html });
   if (finalText) conversation.push({ role: 'model', content: finalText });
 

@@ -1,6 +1,6 @@
 {
   "as_of": "2026-10-30",
-  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py). 'web_soccer_only' runs the web search as Phase 2 would and fails on any American football in what the answer would see; 'web_query_includes' checks the query actually sent to Bing News (after the soccer rewrite). 'facts' are confirmed facts handed to the rubric judge (true even if it doesn't know them).",
+  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py). 'web_soccer_only' runs the web search as Phase 2 would and fails on any American football in what the answer would see; 'web_query_includes' checks the query actually sent to Bing News (after the soccer rewrite). 'facts' are confirmed facts handed to the rubric judge (true even if it doesn't know them). 'core': true marks the cases that get a real answer under --answers (one per answer path plus known past failures); --all-answers runs every \"answer\" case.",
   "domains": {
     "latest-news": "Current events, form and standings - needs fresh information.",
     "match-results": "How a specific recent match went.",
@@ -162,7 +162,8 @@
         ]
       },
       "notes": "Run of Play only has pre-match pieces, so the draft used to lean on them before the web update contradicted it.",
-      "domain": "match-results"
+      "domain": "match-results",
+      "core": true
     },
     {
       "id": "fleetwood-arsenal",
@@ -192,7 +193,8 @@
           "2025-26"
         ]
       },
-      "domain": "match-results"
+      "domain": "match-results",
+      "core": true
     },
     {
       "id": "manchester-derby",
@@ -384,7 +386,8 @@
           "Gotze",
           "Goetze"
         ]
-      }
+      },
+      "core": true
     },
     {
       "id": "false-nine",
@@ -446,7 +449,8 @@
           "build up",
           "defensive"
         ]
-      }
+      },
+      "core": true
     },
     {
       "id": "fifa-formation",
@@ -497,7 +501,8 @@
           "yes, the world cup final was his last"
         ]
       },
-      "notes": "Must correct the user, not agree: the Benin friendly came after the World Cup final."
+      "notes": "Must correct the user, not agree: the Benin friendly came after the World Cup final.",
+      "core": true
     },
     {
       "id": "fleetwood-followup",
@@ -554,7 +559,7 @@
           "whisper in the wind"
         ],
         "query_includes": [
-          "farewell"
+          "Argentina"
         ]
       },
       "notes": "Pronoun follow-up: the classifier has to resolve 'the score' to Messi's farewell match, and the answer must not contradict the earlier turn. The query must carry the resolved subject ('Argentina farewell match' does; 'Messi' isn't required).",
@@ -660,7 +665,8 @@
         "search_required": true,
         "web_soccer_only": true
       },
-      "notes": "Bing News returned only NFL games (Packers-Panthers, Rams-Broncos) for this wording."
+      "notes": "Bing News returned only NFL games (Packers-Panthers, Rams-Broncos) for this wording.",
+      "core": true
     },
     {
       "id": "football-injury-news",
@@ -727,7 +733,8 @@
           "Barcelona already played PSG in the Champions League on 2026-10-20 and Real Madrid on 2026-10-25"
         ]
       },
-      "notes": "The answer once gave the PSG match from ten days earlier as Barcelona's upcoming fixture: Bing News returned 10- and 13-day-old previews of played matches for 'Barcelona upcoming fixture predicted XI', while 'Barcelona preview' over the last week found same-day previews of the real next match, Alavés. Next-match questions now search '<club> preview predicted lineup' over the last week and keep only the last 3 days."
+      "notes": "The answer once gave the PSG match from ten days earlier as Barcelona's upcoming fixture: Bing News returned 10- and 13-day-old previews of played matches for 'Barcelona upcoming fixture predicted XI', while 'Barcelona preview' over the last week found same-day previews of the real next match, Alavés. Next-match questions now search '<club> preview predicted lineup' over the last week and keep only the last 3 days.",
+      "core": true
     },
     {
       "id": "nottingham-going-on",
@@ -744,6 +751,115 @@
         ]
       },
       "notes": "Was not recognised as a current-events question ('going on'), so a 20-day-old FPL tip and April's relegation fight were judged a partial answer and the draft led with them. Current-events questions now need a Run of Play article from the last 14 days to draft from."
+    },
+    {
+      "id": "brighton-city-history",
+      "domain": "history",
+      "question": "What's the history between Brighton and Manchester City?",
+      "answer": true,
+      "expect": {
+        "search_required": false,
+        "facts": [
+          "Joao Pedro no longer plays for Brighton"
+        ]
+      },
+      "notes": "The answer once said 'Brighton, with their own prolific striker in Joao Pedro' from a March 2025 FPL article written in the present tense. Archive chunks now reach the model as dated facts.",
+      "core": true
+    },
+    {
+      "id": "premier-league-top-four",
+      "domain": "latest-news",
+      "question": "premeri league this year top 4 prediction",
+      "answer": true,
+      "core": true,
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "facts": [
+          "This year's league is the 2026-27 season; April 2026 belongs to 2025-26, so title odds from April say nothing about this season"
+        ]
+      },
+      "notes": "An answer once ran April 2026 title odds into October's table as one story ('Back in April... Fast forward to October'). There's no hard check for that wording; read this answer when it changes."
+    },
+    {
+      "id": "roma-followup-finish",
+      "domain": "conversation",
+      "question": "their finishing position prediction?",
+      "answer": true,
+      "core": true,
+      "history": [
+        {
+          "role": "user",
+          "content": "How has Roma been performing without Dybala?"
+        },
+        {
+          "role": "model",
+          "content": "Roma, under Gian Piero Gasperini, have been a different beast this season, more aggressive without the ball and more direct after winning it back."
+        }
+      ],
+      "expect": {
+        "search_required": true,
+        "query_includes": [
+          "Roma"
+        ],
+        "answer_contains_all": [
+          "Roma"
+        ],
+        "answer_excludes": [
+          "England",
+          "World Cup"
+        ]
+      },
+      "notes": "Answered about England's World Cup: the only web result, a Serie A season forecast, was dropped as a match preview, and the answer model never saw that 'their' meant Roma."
+    },
+    {
+      "id": "arsenal-doing-these-days",
+      "question": "how is arsenal doing these days?",
+      "domain": "latest-news",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "kb_title_any": [
+          "Giant killed"
+        ]
+      },
+      "notes": "Keyword search has to put the club's own recent article first, not a newer one about another club or an FPL tip."
+    },
+    {
+      "id": "bayern-match-followup",
+      "question": "What was the result of the Bayern Munich match?",
+      "domain": "conversation",
+      "history": [
+        {
+          "role": "user",
+          "content": "how is arsenal doing these days?"
+        },
+        {
+          "role": "model",
+          "content": "Arsenal are looking solid. They also had a big Champions League clash against Bayern Munich recently."
+        }
+      ],
+      "expect": {
+        "search_required": true,
+        "query_includes": [
+          "Arsenal",
+          "Bayern"
+        ]
+      },
+      "notes": "The match is named only in the bot's last answer, so the classifier has to read that answer to find both clubs."
+    },
+    {
+      "id": "key-player-matchup",
+      "question": "Who might be a key player for Arsenal against Liverpool?",
+      "domain": "latest-news",
+      "expect": {
+        "search_required": true,
+        "web_query_includes": [
+          "preview",
+          "lineup"
+        ]
+      },
+      "notes": "A coming match's key players need a current line-up in the material, or the answer names players from the model's memory."
     }
   ]
 }

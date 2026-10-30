@@ -5,8 +5,10 @@ google-genai
 pinecone
 rank-bm25
 nltk
-crawl4ai
+crawl4ai==0.9.3
 python-dotenv
 gunicorn
 # Pinned: query embeddings must keep matching the vectors already in Pinecone
 fastembed==0.9.1
+# Reads/writes the knowledge store when KB_STORE is a gs:// path (kb_store.py)
+google-cloud-storage

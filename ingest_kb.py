@@ -25,19 +25,39 @@ full-index wipe beforehand.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 import requests
+from google.genai import types as genai_types
 
 from config_env import require_env
-from ragwithsearch import chunk_article
+from gemini_utils import call_gemini_with_key_retry
 from kb_google import embed_texts, get_pinecone_index
+from kb_store import chunk_hash, load_store, save_store, store_location
+from prompt_templates import build_chunk_facts_prompt
+from ragwithsearch import chunk_article
 
 WIX_API_BASE = "https://www.wixapis.com"
+# A post's page on the site (the API has its slug, not its URL).
+POST_URL = "https://www.therunofplay.com/post/"
 PAGE_LIMIT = 100
 CHUNK_MAX_CHARS = 1500
 UPSERT_BATCH_SIZE = 100
+# Posts processed at once (embedding, upsert and the facts call).
+INGEST_WORKERS = 8
+FACTS_MODEL = "gemini-2.5-flash-lite"
+FACTS_KEYS = ("lasting_facts", "time_bound_facts", "scheduled_events", "opinions")
+# Output cap per chunk: a chunk's facts run ~200 tokens, but now and then
+# flash-lite loops until its 65k-token limit (7 of ~1,400 calls on
+# 2026-10-30, ~Rs 2.5 each). A cut-off reply is retried once, warmer.
+FACTS_TOKENS_PER_CHUNK = 600
+# Bump when build_chunk_facts_prompt changes: chunks with facts from an older
+# version are extracted again. 2: running season tallies are time-bound, not
+# lasting ("Haaland: 20 goals in 27 starts in 2024-25" was filed as lasting).
+FACTS_VERSION = 2
 
 
 def _wix_headers() -> Dict[str, str]:
@@ -122,6 +142,7 @@ def chunk_records(post: Dict[str, Any], tag_labels: Dict[str, str] | None = None
                 "created": created,
                 "modified": modified,
                 "chunk": chunk,
+                "url": f"{POST_URL}{post['slug']}" if post.get("slug") else "",
             },
         }
         for i, chunk in enumerate(chunk_article(content_text, max_chunk_length=CHUNK_MAX_CHARS))
@@ -147,25 +168,114 @@ def _vectors_for_post(post: Dict[str, Any], tag_labels: Dict[str, str] | None = 
     return [dict(record, values=embedding) for record, embedding in zip(records, embeddings)]
 
 
-def ingest() -> None:
+def extract_facts(title: str, published: str, chunks: List[str]) -> List[Dict[str, List[str]] | None]:
+    """Each chunk's facts (FACTS_KEYS) from one flash-lite call for the whole
+    post; None for a chunk the call didn't cover or if it failed."""
+    try:
+        published_on = datetime.fromisoformat(published.replace("Z", "+00:00")).date()
+    except (ValueError, AttributeError):
+        published_on = date.today()
+    prompt = build_chunk_facts_prompt(title, published_on, chunks)
+    parsed = None
+    for attempt in range(2):
+        config = genai_types.GenerateContentConfig(
+            temperature=0.3 if attempt else 0, response_mime_type="application/json",
+            max_output_tokens=300 + FACTS_TOKENS_PER_CHUNK * len(chunks),
+        )
+        try:
+            response = call_gemini_with_key_retry(
+                FACTS_MODEL,
+                lambda client: client.models.generate_content(model=FACTS_MODEL, contents=prompt, config=config),
+            )
+            text = (response.text or "").strip()
+            # raw_decode ignores anything after the JSON ("Extra data").
+            parsed, _ = json.JSONDecoder().raw_decode(text[min(i for i in (text.find("{"), text.find("["), len(text)) if i >= 0):])
+            break
+        except Exception as exc:
+            # Occasionally malformed JSON ("Expecting ',' delimiter"): one retry.
+            if attempt:
+                print(f"Facts failed for '{title}': {exc}")
+                return [None] * len(chunks)
+    # Asked for {"chunks": [...]}, but for some posts flash-lite answers with
+    # the bare list, or leaves out the chunk numbers.
+    entries = parsed.get("chunks") if isinstance(parsed, dict) else parsed
+    entries = [entry for entry in entries or [] if isinstance(entry, dict)]
+    by_number = {entry.get("chunk", n): entry for n, entry in enumerate(entries, 1)}
+    if len(by_number) < len(chunks):
+        print(f"Facts for '{title}' cover {len(by_number)} of {len(chunks)} chunks")
+    return [
+        {key: [str(item) for item in (by_number[n].get(key) or [])] for key in FACTS_KEYS} if n in by_number else None
+        for n in range(1, len(chunks) + 1)
+    ]
+
+
+def ingest(assume_embedded: bool = False) -> None:
+    """Bring Pinecone and the knowledge store (kb_store.py) up to date with
+    the Wix blog. Only posts with a new or edited chunk, or a chunk still
+    missing its vector or facts, are embedded and sent for facts; chunks
+    that no longer exist are deleted from Pinecone. assume_embedded (once,
+    when starting a store while Pinecone is already current) skips
+    re-embedding chunks the store has no entry for."""
     print(f"[{datetime.now(timezone.utc).isoformat()}] Fetching posts from Wix...")
     posts = list_wix_posts()
     tag_labels = list_wix_tags()
-    print(f"Found {len(posts)} posts, {len(tag_labels)} tags.")
+    print(f"Found {len(posts)} posts, {len(tag_labels)} tags. Store: {store_location()}")
+
+    previous = load_store().get("chunks", {})
+    chunks: Dict[str, Dict[str, Any]] = {}
+    pending = []
+    for post in posts:
+        records = chunk_records(post, tag_labels)
+        for record in records:
+            entry = previous.get(record["id"]) or {}
+            unchanged = entry.get("hash") == chunk_hash(record["metadata"])
+            chunks[record["id"]] = {
+                "hash": chunk_hash(record["metadata"]),
+                "metadata": record["metadata"],
+                "embedded": (unchanged and entry.get("embedded", False)) or (assume_embedded and not entry),
+                "facts": entry.get("facts") if unchanged and entry.get("facts_version") == FACTS_VERSION else None,
+                "facts_version": FACTS_VERSION,
+            }
+        if any(not chunks[r["id"]]["embedded"] or chunks[r["id"]]["facts"] is None for r in records):
+            pending.append((post, records))
+    print(f"{len(chunks)} chunks; {len(pending)} posts new, edited or incomplete.")
 
     index = get_pinecone_index()
-    all_vectors: List[Dict[str, Any]] = []
-    for post in posts:
-        all_vectors.extend(_vectors_for_post(post, tag_labels))
 
-    print(f"Upserting {len(all_vectors)} vectors into Pinecone...")
-    for i in range(0, len(all_vectors), UPSERT_BATCH_SIZE):
-        batch = all_vectors[i:i + UPSERT_BATCH_SIZE]
-        index.upsert(vectors=batch)
-        print(f"  upserted {i + len(batch)}/{len(all_vectors)}")
+    def process(item) -> None:
+        post, records = item
+        ids = [record["id"] for record in records]
+        if not all(chunks[vid]["embedded"] for vid in ids):
+            try:
+                index.upsert(vectors=_vectors_for_post(post, tag_labels))
+                for vid in ids:
+                    chunks[vid]["embedded"] = True
+            except Exception as exc:
+                print(f"Upsert failed for '{post.get('title', '')}': {exc}")
+        if any(chunks[vid]["facts"] is None for vid in ids):
+            facts = extract_facts(post.get("title", ""), post.get("firstPublishedDate", ""),
+                                  [record["metadata"]["chunk"] for record in records])
+            for vid, chunk_facts in zip(ids, facts):
+                chunks[vid]["facts"] = chunk_facts
 
-    print("Done.")
+    try:
+        with ThreadPoolExecutor(INGEST_WORKERS) as pool:
+            for done, _ in enumerate(pool.map(process, pending), 1):
+                if done % 50 == 0 or done == len(pending):
+                    print(f"  processed {done}/{len(pending)} posts")
+    finally:
+        # Saved even if interrupted: unfinished chunks are retried next run.
+        save_store({"chunks": chunks})
+
+    gone = [vid for vid in previous if vid not in chunks]
+    if gone:
+        print(f"Deleting {len(gone)} vectors of removed or shortened posts...")
+        for i in range(0, len(gone), 1000):
+            index.delete(ids=gone[i:i + 1000])
+    missing = sum(1 for entry in chunks.values() if not entry["embedded"] or entry["facts"] is None)
+    print(f"Done. {len(chunks)} chunks stored; {missing} still missing a vector or facts.")
 
 
 if __name__ == "__main__":
-    ingest()
+    import sys
+    ingest(assume_embedded="--assume-embedded" in sys.argv)

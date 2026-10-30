@@ -39,6 +39,10 @@ const format = (text) => {
 // answer ends. Same as wix/offthebar-page.js.
 const HALFTIME_LINES = /^##\s*HALFTIME!!!\s*(.*)$/gm;
 const FIRST_STATUS = "Searching The Run of Play"; // shown before the first chunk arrives
+// After a finished answer, the Run of Play articles it drew on, as
+// "## SOURCES!!! [{"title", "url"}]" - shown as links at the end, never web pages.
+const SOURCES_LINES = /^##\s*SOURCES!!!\s*(.*)$/gm;
+const RUN_OF_PLAY_SITE = "https://www.therunofplay.com/";
 
 // Full answers end with an "Ask next:" list of follow-up prompts; once the
 // answer is done they show as buttons that send the question.
@@ -46,7 +50,7 @@ const FOLLOW_UPS_LINE = /^[ \t]*(?:\*\*|__)?Ask next:?(?:\*\*|__)?[ \t]*$/im;
 const FOLLOW_UP_ITEM = /^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/;
 
 const stripHalftime = (text) =>
-  text.replace(HALFTIME_LINES, "").replace(/\n{3,}/g, "\n\n").trim();
+  text.replace(HALFTIME_LINES, "").replace(SOURCES_LINES, "").replace(/\n{3,}/g, "\n\n").trim();
 
 const escapeHtml = (text) =>
   text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c]);
@@ -75,6 +79,22 @@ const hidePartialFollowUpsLine = (text) => {
   return tail && "asknext:".startsWith(tail) ? text.slice(0, start) : text;
 };
 
+const sourcesHtml = (text) => {
+  const line = [...text.matchAll(SOURCES_LINES)].pop();
+  if (!line) return "";
+  let sources = [];
+  try {
+    sources = JSON.parse(line[1]);
+  } catch (e) {
+    return "";
+  }
+  const links = (Array.isArray(sources) ? sources : [])
+    .filter((s) => s && typeof s.url === "string" && s.url.startsWith(RUN_OF_PLAY_SITE))
+    .map((s) => `<a class="source-link" href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>`)
+    .join("");
+  return links ? `<div class="source-links"><div class="source-links__label">From The Run of Play</div>${links}</div>` : "";
+};
+
 const renderAssistantText = (text, final = false) => {
   let { body, followUps } = splitFollowUps(stripHalftime(text));
   if (!final) body = hidePartialFollowUpsLine(body);
@@ -91,6 +111,7 @@ const renderAssistantText = (text, final = false) => {
       .join("");
     html += `<div class="followup-suggestions">${buttons}</div>`;
   }
+  if (final) html += sourcesHtml(text);
   return html;
 };
 
@@ -232,6 +253,7 @@ const ask_gpt = async (message) => {
       body: JSON.stringify({
         conversation_id: window.conversation_id,
         stage_statuses: true, // a status line per stage (see HALFTIME_LINES)
+        sources: true, // the Run of Play articles used (see SOURCES_LINES)
         action: `_ask`,
         model: model.options[model.selectedIndex].value,
         jailbreak: jailbreak.options[jailbreak.selectedIndex].value,
@@ -298,9 +320,10 @@ const ask_gpt = async (message) => {
       message_box.scrollTo({ top: message_box.scrollHeight, behavior: "auto" });
     }
 
+    const rawText = text;
     text = stripHalftime(text);
     document.getElementById(`gpt_${window.token}`).innerHTML =
-      renderAssistantText(text, true);
+      renderAssistantText(rawText, true);
     syncStatusTimer();
 
     // if text contains :
@@ -571,6 +594,8 @@ const message_id = () => {
 };
 
 window.onload = async () => {
+  fetch(`/api/warm`, { cache: `no-store` }).catch(() => {});
+
   let conversations = 0;
   load_settings_localstorage();
 

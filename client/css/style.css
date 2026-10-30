@@ -289,6 +289,25 @@ body {
     transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
+.source-links {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.88em;
+}
+
+.source-links__label {
+    opacity: 0.65;
+}
+
+.source-link {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+}
+
 .followup-suggestion:hover {
     background: #8a8a8a22;
     border-color: #8a8a8a;

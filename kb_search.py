@@ -22,8 +22,10 @@ fields), in a background thread, and refreshed every few hours since ingestion
 runs daily. It used to be read back from Pinecone, every vector included
 (~30MB), on each start and refresh; that used up Pinecone's 1GB monthly read
 allowance on 2026-10-30. A copy on disk (KB_SNAPSHOT_CACHE) serves restarts
-within the refresh interval - local reloads and eval runs. Until the first
-snapshot is ready, search ranks Pinecone's candidates alone.
+within the refresh interval - local reloads and eval runs. A search that
+arrives before the first snapshot waits for it (INDEX_WAIT_SECONDS), then ranks
+Pinecone's candidates alone. On a cold Cloud Run instance the loading only gets
+CPU while a request is open, which is what wait_until_ready() is for.
 
 Pinecone calls get a deadline, and after a quota error Pinecone is skipped for
 an hour: a request over the limit took ~12s of client retries to fail.
@@ -49,9 +51,20 @@ from kb_google import embed_texts, get_pinecone_index
 
 DENSE_CANDIDATES = 30
 LEXICAL_CANDIDATES = 30
+# Recent chunks about the question's subject always join the candidates:
+# BM25's top list alone misses them when filler words ("recent form results")
+# outscore a common club name.
+SUBJECT_RECENT_DAYS = 45
+# A word in a tag or two names a subject only if it starts the tag or is rare
+# in the articles ("Newcastle", "Kompany", not the "day" of Deadline Day).
+SUBJECT_MIN_IDF = 2.0
+SUBJECT_MAX_TAGS = 2
+# Share of the subject a chunk's title and tags must name to count as about it.
+ON_SUBJECT_SHARE = 0.5
 MAX_CHUNKS_PER_ARTICLE = 2
 SNAPSHOT_TTL_SECONDS = 6 * 60 * 60
 SNAPSHOT_RETRY_SECONDS = 60
+INDEX_WAIT_SECONDS = 20
 SNAPSHOT_CACHE = Path(os.getenv("KB_SNAPSHOT_CACHE") or Path(__file__).resolve().parent / ".cache" / "kb_snapshot.json")
 # Keyword-only candidates whose vectors are fetched for their real similarity
 # (the best by BM25); the rest rank at the lowest dense score.
@@ -134,10 +147,32 @@ class _Snapshot:
         ])
         self.position = {vid: i for i, vid in enumerate(self.ids)}
         self.tags = {tag for md in self.metadata for tag in (md.get("tags") or [])}
+        self.heading_terms = [set(_tokenize(_heading_text(md))) for md in self.metadata]
+        self.tag_terms = [terms for terms in (set(_tokenize(tag)) for tag in self.tags) if terms]
+        self.tag_first_words = {_tokenize(tag)[0] for tag in self.tags if _tokenize(tag)}
+        self.tag_word_counts = {}
+        for terms in self.tag_terms:
+            for term in terms:
+                self.tag_word_counts[term] = self.tag_word_counts.get(term, 0) + 1
+        self.urls = {article_title(md): md["url"] for md in self.metadata if md.get("url")}
         self.vocabulary = {}
         for term in self.bm25.idf:
             self.vocabulary.setdefault(term[0], []).append(term)
         self.loaded_at = time.monotonic()
+
+    def subject_terms(self, query_terms):
+        """The query words that name who it's about: every word of a tag it
+        spells out ("Manchester United", "Arsenal"), and words found in a tag
+        or two that start the tag ("Newcastle") or are rare ("Kompany")."""
+        subject = {
+            term for term in query_terms
+            if 0 < self.tag_word_counts.get(term, 0) <= SUBJECT_MAX_TAGS
+            and (term in self.tag_first_words or self.bm25.idf.get(term, 0.0) >= SUBJECT_MIN_IDF)
+        }
+        for terms in self.tag_terms:
+            if terms <= query_terms:
+                subject |= terms
+        return subject
 
     def correct(self, terms):
         """Swap words the index has never seen for the closest indexed word
@@ -175,7 +210,23 @@ def _save_records(records):
         print(f"[OffTheBar kb] couldn't save the keyword index to {SNAPSHOT_CACHE}: {exc}")
 
 
+def _store_records():
+    """Every chunk's metadata with its extracted facts, from the knowledge
+    store ingestion writes (kb_store.py) - None if there isn't one yet."""
+    from kb_store import load_store
+    try:
+        chunks = load_store().get("chunks", {})
+    except Exception as exc:
+        print(f"[OffTheBar kb] couldn't read the knowledge store: {exc}")
+        return None
+    return {vid: dict(entry["metadata"], facts=entry.get("facts")) for vid, entry in chunks.items()} or None
+
+
 def _load_snapshot():
+    records = _store_records()
+    if records is not None:
+        return _Snapshot(records)
+    # No store yet: built from the Wix blog, without facts.
     records = _cached_records()
     if records is None:
         # Imported here: ingest_kb imports ragwithsearch, which imports this module.
@@ -219,6 +270,8 @@ def _pinecone(call):
 
 _snapshot = None
 _snapshot_lock = threading.Lock()
+_first_load_done = threading.Event()
+_connect_done = threading.Event()
 _refreshing = False
 _last_attempt = float("-inf")
 
@@ -232,8 +285,15 @@ def _refresh():
     except Exception as exc:
         print(f"[OffTheBar kb] keyword index load failed: {exc}")
     finally:
+        _first_load_done.set()
         with _snapshot_lock:
             _refreshing = False
+
+
+def article_url(title):
+    """The page of the Run of Play article with this title, or None."""
+    snapshot = _snapshot
+    return snapshot.urls.get(title) if snapshot else None
 
 
 def known_tags():
@@ -244,20 +304,34 @@ def known_tags():
 
 
 def _connect():
-    """Load the embedding model and open the Pinecone connection, which the
-    first question otherwise waited for (~0.3s for Pinecone alone)."""
+    """Load the embedding model, open the Pinecone connection and start the
+    scraper's browser once, all of which the first question otherwise paid for."""
     try:
         embed_texts(["warm up"])
         get_pinecone_index()
     except Exception as exc:
         print(f"[OffTheBar kb] warm-up failed: {exc}")
+    try:
+        import crawl4AI
+        crawl4AI.warm_up()
+    finally:
+        _connect_done.set()
 
 
 def start_up():
-    """At startup, in the background: the keyword index, the embedding model
-    and the Pinecone connection."""
+    """At startup, in the background: the keyword index, the embedding model,
+    the Pinecone connection and the scraper's browser."""
     warm_up()
     threading.Thread(target=_connect, name="kb-connect", daemon=True).start()
+
+
+def wait_until_ready(timeout):
+    """Block until the keyword index, the embedding model and the Pinecone
+    connection have finished loading, or `timeout` seconds pass. Returns
+    whether they finished."""
+    warm_up()
+    deadline = time.monotonic() + timeout
+    return all(event.wait(max(0, deadline - time.monotonic())) for event in (_first_load_done, _connect_done))
 
 
 def warm_up():
@@ -271,6 +345,11 @@ def warm_up():
         _refreshing = True
         _last_attempt = now
     threading.Thread(target=_refresh, name="kb-keyword-index", daemon=True).start()
+
+
+def _named_share(subject, heading):
+    """How much of the question's subject a chunk's title and tags name."""
+    return len(subject & heading) / len(subject) if subject else 1.0
 
 
 def _relative(scores):
@@ -294,6 +373,9 @@ def hybrid_search(query, latest_news=False, top_k=4):
     keyword index are unavailable.
     """
     warm_up()
+    # Without the index a cold instance has no hits at all while Pinecone is down.
+    if _snapshot is None:
+        _first_load_done.wait(INDEX_WAIT_SECONDS)
     snapshot = _snapshot
     mode = "latest" if latest_news else "evergreen"
     weights = WEIGHTS[mode]
@@ -306,19 +388,27 @@ def hybrid_search(query, latest_news=False, top_k=4):
         results = _pinecone(lambda index: index.query(vector=query_vector, top_k=DENSE_CANDIDATES, include_metadata=True))
         for match in results["matches"]:
             dense[match["id"]] = match["score"]
-            candidates[match["id"]] = dict(match["metadata"])
+            # The keyword index's copy carries the chunk's extracted facts.
+            known = snapshot is not None and match["id"] in snapshot.position
+            candidates[match["id"]] = snapshot.metadata[snapshot.position[match["id"]]] if known else dict(match["metadata"])
     except Exception as exc:
         print(f"Pinecone search failed: {exc}")
 
     query_terms = set(_tokenize(query))
     if snapshot is not None:
         query_terms = snapshot.correct(query_terms)
+    subject = snapshot.subject_terms(query_terms) if snapshot is not None else set()
     bm25 = {}
     if snapshot is not None and query_terms:
         scores = snapshot.bm25.get_scores(list(query_terms))
         for i in scores.argsort()[::-1][:LEXICAL_CANDIDATES]:
             if scores[i] > 0:
                 candidates.setdefault(snapshot.ids[i], snapshot.metadata[i])
+        for i, heading in enumerate(snapshot.heading_terms):
+            if subject and _named_share(subject, heading) >= ON_SUBJECT_SHARE:
+                age = iso_age_days(snapshot.metadata[i].get("created"))
+                if age is not None and age <= SUBJECT_RECENT_DAYS:
+                    candidates.setdefault(snapshot.ids[i], snapshot.metadata[i])
         for vid in candidates:
             if vid in snapshot.position:
                 bm25[vid] = float(scores[snapshot.position[vid]])
@@ -360,6 +450,9 @@ def hybrid_search(query, latest_news=False, top_k=4):
             + weights["coverage"] * coverage
             + weights["recency"] * recency
         )
+        # An article about someone else can't lead, however new it is.
+        share = _named_share(subject, set(_tokenize(_heading_text(md))))
+        score *= 0.5 + 0.5 * share
         hits.append({
             "id": vid,
             "metadata": md,
@@ -370,6 +463,7 @@ def hybrid_search(query, latest_news=False, top_k=4):
             "coverage": coverage,
             "recency": recency,
             "score": score,
+            "on_subject": share >= ON_SUBJECT_SHARE,
         })
 
     hits.sort(key=lambda hit: hit["score"], reverse=True)

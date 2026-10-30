@@ -10,10 +10,12 @@ Project `runofplay` (number `607277832880`), region `asia-south1`.
 
 | Resource | What it is | State |
 |---|---|---|
-| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00002-p56`, 100% traffic, deployed 2026-09-21. Public (`allUsers` invoker). No `--max-instances` cap. |
-| `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | **Failing every run since 2026-10-08** - Hugging Face embeddings return `402 Payment Required`. Fixed in code (embeddings now computed locally, see CLAUDE.md); recovers once `offthebar-api` is redeployed and the job's image updated (step 4). |
+| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00009-7kt` (deployed 2026-10-31), 100% traffic. Public (`allUsers` invoker). `--max-instances 2`, no minimum instances: the chat pages wake it with `GET /api/warm` on load. |
+| `offthebar-football-data` (job) | `python football_data.py` on the same image | Every 6 hours, Cloud Scheduler job `offthebar-football-data-6h`. See step 7. |
+| `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | Healthy since 2026-10-31, on the same image as `offthebar-api`. Failed every run from 2026-10-08 to 2026-10-30 (Hugging Face `402 Payment Required`; embeddings are now computed locally). Reads and writes the knowledge store in Cloud Storage. |
 | `offthebar-ingest-kb-daily` (Cloud Scheduler) | triggers the job at `0 4 * * *` UTC | Enabled. |
 | `searxng-docker` (service) | web search backend | Live. Request-based billing (CPU only during requests), 1 vCPU / 512Mi, scales to zero. |
+| `runofplay-offthebar-kb` (Cloud Storage bucket) | the knowledge store `kb_store.json.gz` (step 6) | Created 2026-10-30, private, asia-south1. |
 | `searxng-keep-warm` (Cloud Scheduler) | `GET /robots.txt` on `searxng-docker` every 10 min | Enabled 2026-10-30 (step 5). |
 | `searx-proxy` | legacy Gen2 Cloud Function `searx_proxy` | Still ACTIVE, unused by this code. Candidate for deletion. |
 
@@ -81,9 +83,10 @@ gcloud run deploy offthebar-api \
   --region asia-south1 \
   --allow-unauthenticated \
   --memory 2Gi \
-  --cpu 1 \
+  --cpu 2 \
+  --max-instances 2 \
   --timeout 300 \
-  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,SEARXNG_URL=https://searxng-docker-607277832880.asia-south1.run.app,GEMINI_FREE_TIER_KEYS=2" \
+  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,SEARXNG_URL=https://searxng-docker-607277832880.asia-south1.run.app,GEMINI_FREE_TIER_KEYS=2,KB_STORE=gs://runofplay-offthebar-kb/kb_store.json.gz,FOOTBALL_DATA_STORE=gs://runofplay-offthebar-kb/football_data.json.gz" \
   --set-secrets "FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
 ```
 
@@ -107,12 +110,15 @@ routinely runs longer under real traffic.
 The command prints a `*.run.app` URL when it finishes — that's your new
 `API_URL`.
 
-The service is public and the app has no API credential check or rate limit,
-so nothing caps how far it scales under abuse (Cloud Run's default instance
-limit applies). The current deployment has no cap; a cheap guard is:
+The service is public and the app has no API credential check or rate limit.
+`--max-instances 2` above caps how far it scales under abuse, with room to
+spare at the site's traffic. It limits how fast the Gemini key can be spent,
+not whether it can: two instances of 8 threads still serve ~16 answers at once.
+A rate limit is the real protection. The cap has been live since 2026-10-31. When both instances are full, Cloud
+Run answers 429 or 503 and the Wix page shows a "try again" message. To change it:
 
 ```bash
-gcloud run services update offthebar-api --region asia-south1 --max-instances 3
+gcloud run services update offthebar-api --region asia-south1 --max-instances 2
 ```
 
 ### 3. Point the Wix page at the new URL
@@ -148,8 +154,8 @@ gcloud run jobs create offthebar-ingest-kb \
   --command python \
   --args ingest_kb.py \
   --memory 1Gi --cpu 1 --task-timeout 900 --max-retries 1 \
-  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1" \
-  --set-secrets "PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
+  --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,GEMINI_FREE_TIER_KEYS=2,KB_STORE=gs://runofplay-offthebar-kb/kb_store.json.gz" \
+  --set-secrets "PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest"
 ```
 
 Get the current image digest with:
@@ -243,3 +249,59 @@ curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
   -d '{"jailbreak": true, "meta": {"content": {"conversation": [], "parts": [{"content": "hi"}]}}}'
 ```
+
+### 7. Football data (`FOOTBALL_DATA_STORE`)
+
+`football_data.py` fetches tables, matches, squads, managers and top scorers
+from football-data.org's free plan (about 5 minutes at 10 calls a minute) into
+`gs://runofplay-offthebar-kb/football_data.json.gz`. `offthebar-api` re-reads
+that file every 30 minutes and needs no key. Update this job's image whenever
+`offthebar-api` is redeployed, as with `offthebar-ingest-kb`.
+
+```bash
+printf %s "$FOOTBALL_DATA_API_KEY" | gcloud secrets create FOOTBALL_DATA_API_KEY --data-file=-
+gcloud secrets add-iam-policy-binding FOOTBALL_DATA_API_KEY \
+  --member="serviceAccount:607277832880-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+gcloud run jobs create offthebar-football-data --region asia-south1 \
+  --image <the offthebar-api image> --command python --args football_data.py \
+  --memory 512Mi --cpu 1 --task-timeout 900 --max-retries 0 \
+  --set-env-vars FOOTBALL_DATA_STORE=gs://runofplay-offthebar-kb/football_data.json.gz \
+  --set-secrets FOOTBALL_DATA_API_KEY=FOOTBALL_DATA_API_KEY:latest
+
+gcloud run jobs add-iam-policy-binding offthebar-football-data --region asia-south1 \
+  --member="serviceAccount:ingest-kb-scheduler@runofplay.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+
+gcloud scheduler jobs create http offthebar-football-data-6h --location asia-south1 \
+  --schedule "20 */6 * * *" --http-method POST \
+  --uri https://asia-south1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/runofplay/jobs/offthebar-football-data:run \
+  --oauth-service-account-email ingest-kb-scheduler@runofplay.iam.gserviceaccount.com
+```
+
+The site must show "Football data provided by the Football-Data.org API"
+(their terms, section 7.1), and the key belongs to one domain.
+
+### 6. Knowledge store (`KB_STORE`)
+
+`ingest_kb.py` writes every chunk's metadata, a content hash and the facts
+extracted from it (lasting facts, time-bound facts, scheduled events, the
+writer's opinions - see `kb_store.py`) to one gzipped JSON in Cloud Storage;
+`offthebar-api` builds its keyword index from it and gives the answer model
+old articles' facts, dated, instead of their text. Both read
+`KB_STORE=gs://runofplay-offthebar-kb/kb_store.json.gz` (set in the commands
+above); the default service account's `roles/editor` covers the bucket.
+
+```bash
+gcloud storage buckets create gs://runofplay-offthebar-kb --project runofplay \
+  --location asia-south1 --uniform-bucket-level-access --public-access-prevention
+```
+
+Ingestion is incremental: only posts with a new or edited chunk (by hash), or
+a chunk still missing its vector or facts, are embedded and sent to
+gemini-2.5-flash-lite for facts (one call per post), so a daily run costs
+fractions of a cent. The first full extraction (660 posts) is a one-time cost.
+The ingestion job needs the Gemini keys for it (added to the job's secrets
+above). Without `KB_STORE`, both use `.cache/kb_store.json.gz` (local dev).
+

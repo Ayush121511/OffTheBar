@@ -35,6 +35,7 @@ def _run_payload(path: Path, domain_of: dict) -> dict:
         "ran_at": report.get("ran_at", ""),
         "as_of": report.get("as_of"),
         "answers": bool(report.get("answers")),
+        "core": bool(report.get("core")),
         "filtered": bool(report.get("filtered")),
         "cost": report.get("cost_usd", 0.0),
         "calls": len(calls),
@@ -284,7 +285,7 @@ const hideTip = () => { tip.style.display = 'none'; };
 const runs = DATA.runs;
 const runSel = $('run'), domSel = $('domain');
 runs.forEach((r, i) => runSel.append(el('option', { value: i },
-  `${fmtDate(r.ran_at)} · ${r.answers ? 'with answers' : 'routing only'} · ${r.cases.length} cases${r.filtered ? ' (filtered)' : ''}`)));
+  `${fmtDate(r.ran_at)} · ${r.core ? 'core answers' : r.answers ? 'with answers' : 'routing only'} · ${r.cases.length} cases${r.filtered ? ' (filtered)' : ''}`)));
 domSel.append(el('option', { value: '' }, 'All domains'));
 Object.keys(DATA.domains).forEach(d => domSel.append(el('option', { value: d }, d)));
 // Open on the latest complete run - a partial rerun (--only / --domain) isn't the headline.
@@ -301,7 +302,7 @@ function current() {
 
 function previousComparable(run) {
   const idx = runs.indexOf(run);
-  for (let i = idx - 1; i >= 0; i--) if (runs[i].answers === run.answers && !runs[i].filtered) return runs[i];
+  for (let i = idx - 1; i >= 0; i--) if (runs[i].answers === run.answers && runs[i].core === run.core && !runs[i].filtered) return runs[i];
   return null;
 }
 
@@ -369,7 +370,7 @@ function renderSections({ scores }) {
 function renderTrend({ dom }) {
   const box = $('trend'); box.replaceChildren();
   const pts = runs.map((r, i) => ({ r, i, v: dom ? r.scores.domains[dom]?.overall : r.scores.all.overall }))
-    .filter(p => !p.r.filtered && p.v != null);
+    .filter(p => !p.r.filtered && !p.r.core && p.v != null);
   const table = $('trendTable');
   table.replaceChildren(el('tr', {}, el('th', {}, 'Run'), el('th', {}, 'Kind'), el('th', {}, 'Cases'), el('th', {}, 'Score')));
   pts.forEach(p => table.append(el('tr', {}, el('td', {}, fmtDate(p.r.ran_at)), el('td', {}, p.r.answers ? 'with answers' : 'routing only'),
@@ -492,6 +493,7 @@ function caseDetail(c) {
     add('Answer', el('pre', { class: 'answer' }, a.answer || ''));
     add('Timing', `first words ${a.first_words_s ?? '-'}s · done ${a.total_s ?? '-'}s · ${a.path}`);
     if (a.judge_note) add('Judge', a.judge_note);
+    if (a.sources) add('Sources', a.sources.map(x => x.title).join('  ·  ') || '(none)');
   }
   add('Checks', el('div', {}, ...c.checks.map(k => el('div', {},
     el('span', { class: 'status ' + (k.ok ? 'pass' : 'fail') }, k.ok ? '✓' : '✕'), ` ${k.section} / ${k.check}`,

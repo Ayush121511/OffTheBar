@@ -1,4 +1,6 @@
 import asyncio
+import time
+
 from crawl4ai import AsyncWebCrawler
 
 # Pages are fetched together in one browser, and whatever hasn't loaded by
@@ -31,6 +33,23 @@ async def _crawl_pages_async(urls, deadline):
                 print(f"Crawl timed out after {deadline}s: {url}")
                 pages[url] = ""
         return pages
+
+
+async def _open_browser_once():
+    async with AsyncWebCrawler():
+        pass
+
+
+def warm_up():
+    """Start the browser once and close it. A new container's first launch
+    took ~6s on Cloud Run's one CPU, longer than the crawl deadline, so the
+    first visitor's three pages all timed out; the next launch took under 3s."""
+    started = time.monotonic()
+    try:
+        asyncio.run(_open_browser_once())
+        print(f"[OffTheBar crawl] browser warmed up in {time.monotonic() - started:.1f}s")
+    except Exception as exc:
+        print(f"[OffTheBar crawl] browser warm-up failed: {exc}")
 
 
 def crawl_pages(urls, deadline=CRAWL_DEADLINE_SECONDS):

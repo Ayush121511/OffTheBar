@@ -39,7 +39,7 @@ heading) against a newer backend.
 Pick the backend from the toolbar:
 
 - **mock** (default) - a canned two-phase answer with a pause between the
-  phases, no API calls. Send a message containing `mock-error` to test the
+  phases, no API calls. Send a message containing `mock-busy` or `mock-unreachable` to test the "all instances full" message (the second is what a browser sees if the reply has no CORS headers), or `mock-error` to test the
   failure path, or `mock-nothing-new` for an answer that ends on the draft.
 - **local** - your local backend at `http://localhost:1338` (`python -u run.py`
   from the repo root).
@@ -61,6 +61,10 @@ Gemini sends text in bursts of a few hundred characters, so the page reveals
 what has arrived a word at a time (every 40ms, faster the further behind it
 is) instead of showing each burst at once. Stop keeps only what was on screen.
 
+- `GET /api/warm` - sent once when the page loads, and its response is ignored.
+  It wakes a sleeping backend while the visitor reads, and the backend holds
+  it open until loading is done. A backend without this route answers 404,
+  which does no harm, so the publish and the deploy can happen in either order.
 - `## HALFTIME!!! <status>` - a status line the backend streams at each stage:
   `Searching The Run of Play` first, `Searching the web` while it waits for the
   web search, and `Generating` until the first words of an answer (or of the
@@ -74,6 +78,10 @@ is) instead of showing each burst at once. Stop keeps only what was on screen.
   older pages handle - before the web update or the combined answer - so
   publishing the page code and redeploying the backend don't have to happen
   at the same moment.
+- `## SOURCES!!! [{"title", "url"}]` - one line after a finished answer, for pages
+  that send `sources: true`: the Run of Play articles it drew on. Shown as
+  `.otb-source` links at the end of the answer, after the suggestions; anything
+  not on www.therunofplay.com is dropped. Stripped from the answer text.
 - `Ask next:` followed by a list - the follow-up prompts every full answer ends
   with (`prompt_templates.FOLLOW_UP_FORMAT`). They're cut from the text and,
   once the answer is done, shown as `.otb-suggestion` buttons. Only the latest

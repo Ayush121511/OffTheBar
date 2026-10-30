@@ -2,7 +2,8 @@
 Evaluate the Off The Bar pipeline against evals/cases.json and build the dashboard.
 
     python evals/run_evals.py                  # routing sections only - flash-lite calls, well under a cent
-    python evals/run_evals.py --answers        # + real answers for cases marked "answer": true (~7 cents)
+    python evals/run_evals.py --answers        # + real answers for the "core" cases (~Rs 2.5, less on free quota)
+    python evals/run_evals.py --all-answers    # + real answers for every "answer" case, before a deploy (~Rs 5)
     python evals/run_evals.py --only clasico-result,false-nine --answers
     python evals/run_evals.py --domain latest-news
 
@@ -52,6 +53,7 @@ with contextlib.redirect_stdout(io.StringIO()):
 
 import dashboard
 import scoring
+import server.backend as backend
 
 REPORTS = REPO / "evals" / "reports"
 
@@ -65,6 +67,8 @@ USAGE_LINE = re.compile(
     r"\[OffTheBar Gemini\] (\S+) via key #\S+ \((free|paid)\): input (\d+), output (\d+), thinking (\d+) tokens"
 )
 HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
+SOURCES_LINE = re.compile(r"^##\s*SOURCES!!!\s*(.*)$", re.M)
+RUN_OF_PLAY_SITE = "https://www.therunofplay.com/"
 FOLLOW_UPS = re.compile(r"^[ \t]*(?:\*\*|__)?Ask next:?(?:\*\*|__)?[ \t]*$", re.I | re.M)
 FOLLOW_UP_ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
 # Things a user must never see (case-sensitive: "halftime" is ordinary football).
@@ -108,6 +112,27 @@ def check(checks, section, name, ok, detail="", score=None):
 
 def contains(text, needle):
     return needle.lower() in text.lower()
+
+
+class Reused:
+    """Wraps a decision call (classifier, coverage check) so the routing stage
+    reuses what the same case's answer stage just paid for. They run at
+    temperature 0, so a second call would say the same. Answers go first so
+    their timing stays real; anything not seen yet is called as usual."""
+
+    reuse = False
+
+    def __init__(self, call):
+        self.call, self.seen = call, {}
+
+    def __call__(self, *args):
+        if not (Reused.reuse and args in self.seen):
+            self.seen[args] = self.call(*args)
+        return self.seen[args]
+
+
+ragwithsearch.classify_and_build_query = Reused(ragwithsearch.classify_and_build_query)
+ragwithsearch.judge_kb_coverage = backend.judge_kb_coverage = Reused(ragwithsearch.judge_kb_coverage)
 
 
 def route_case(case):
@@ -227,6 +252,7 @@ def answer_case(case):
         "jailbreak": True,
         "conversation_id": "eval-run",
         "stage_statuses": True,
+        "sources": True,
         "meta": {"content": {"conversation": case.get("history", []), "parts": [{"content": case["question"]}]}},
     }
     log, raw = io.StringIO(), ""
@@ -240,7 +266,9 @@ def answer_case(case):
                 first_words = time.time() - start
         total = time.time() - start
         response.close()
-    text = re.sub(r"\n{3,}", "\n\n", HALFTIME_LINE.sub("", raw)).strip()
+    sources_line = SOURCES_LINE.search(raw)
+    sources = json.loads(sources_line.group(1)) if sources_line else []
+    text = re.sub(r"\n{3,}", "\n\n", SOURCES_LINE.sub("", HALFTIME_LINE.sub("", raw))).strip()
     # Every answer streams status lines now, so the path comes from the log.
     if "doesn't answer the question" in log.getvalue() or "flagged nothing relevant" in log.getvalue():
         path = "combined"
@@ -270,6 +298,8 @@ def answer_case(case):
     block = FOLLOW_UPS.split(text)
     items = [l for l in block[-1].splitlines() if FOLLOW_UP_ITEM.match(l)] if len(block) > 1 else []
     check(checks, "safety", "answer:ask-next block", 2 <= len(items) <= 3, f"{len(items)} items")
+    off_site = [s["url"] for s in sources if not s.get("url", "").startswith(RUN_OF_PLAY_SITE)]
+    check(checks, "safety", "answer:sources are Run of Play", not off_site, f"found {off_site}" if off_site else f"{len(sources)} links")
     if first_words is not None:
         budget = LATENCY_BUDGET[path]
         check(checks, "performance", "answer:first words", first_words <= budget,
@@ -288,7 +318,7 @@ def answer_case(case):
             check(checks, "quality", f"rubric:{key}", rating >= 4, f"{rating}/5", score=(rating - 1) / 4)
 
     info = {"path": path, "first_words_s": round(first_words, 1) if first_words else None,
-            "total_s": round(total, 1), "answer": text, "judge_note": note}
+            "total_s": round(total, 1), "answer": text, "judge_note": note, "sources": sources}
     return checks, info, log.getvalue()
 
 
@@ -298,7 +328,8 @@ def pct(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--answers", action="store_true", help="also generate answers for cases marked \"answer\": true")
+    parser.add_argument("--answers", action="store_true", help="also generate answers for the \"core\" cases")
+    parser.add_argument("--all-answers", action="store_true", help="also generate answers for every \"answer\" case")
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--domain", help="comma-separated domains")
     parser.add_argument("--cases", default=str(REPO / "evals" / "cases.json"))
@@ -327,10 +358,15 @@ def main():
 
     results, all_calls, started = [], [], time.time()
     for case in cases:
+        answer_result = None
+        if case.get("answer") and (args.all_answers or (args.answers and (args.only or case.get("core")))):
+            Reused.reuse = False
+            answer_result = answer_case(case)
+            Reused.reuse = True
         checks, info, log_text = route_case(case)
         calls = usage_from(log_text)
-        if args.answers and case.get("answer"):
-            answer_checks, answer_info, answer_log = answer_case(case)
+        if answer_result:
+            answer_checks, answer_info, answer_log = answer_result
             checks += answer_checks
             info["answer"] = answer_info
             calls += usage_from(answer_log)
@@ -361,10 +397,11 @@ def main():
           f"estimated cost ${cost:.4f} (₹{cost * dashboard.USD_TO_INR:.2f}); {time.time() - started:.0f}s")
 
     REPORTS.mkdir(exist_ok=True)
-    out = REPORTS / f"{datetime.now():%Y%m%d-%H%M%S}{'-answers' if args.answers else ''}.json"
+    answers = args.answers or args.all_answers
+    out = REPORTS / f"{datetime.now():%Y%m%d-%H%M%S}{'-answers' if answers else ''}.json"
     out.write_text(json.dumps({
         "as_of": spec.get("as_of"), "ran_at": datetime.now().isoformat(timespec="seconds"),
-        "answers": args.answers, "filtered": bool(args.only or args.domain),
+        "answers": answers, "core": bool(args.answers and not args.all_answers), "filtered": bool(args.only or args.domain),
         "cost_usd": cost, "duration_s": round(time.time() - started), "calls": all_calls,
         "scores": scores, "results": results,
     }, indent=2, ensure_ascii=False))

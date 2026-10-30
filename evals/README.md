@@ -6,7 +6,8 @@ and after any change to retrieval, prompts or routing.
 
 ```bash
 python evals/run_evals.py                      # routing sections only - ~$0.01 for all cases
-python evals/run_evals.py --answers            # + real answers for cases marked "answer": true - ~$0.065 more
+python evals/run_evals.py --answers            # + real answers for the 8 "core" cases - about Rs 2.5 in all
+python evals/run_evals.py --all-answers        # + real answers for every "answer" case, before a deploy - about Rs 5
 python evals/run_evals.py --domain latest-news --answers
 python evals/run_evals.py --only clasico-result,false-nine --answers
 python evals/dashboard.py                      # rebuild the dashboard from existing reports
@@ -59,6 +60,16 @@ Every check belongs to one section (`scoring.py`):
 
 ## Cost
 
+Answers are most of the bill: in one full run 21 `gemini-2.5-flash` calls cost
+Rs 3.01 and 133 flash-lite calls Rs 1.52. So:
+
+- `--answers` runs the 8 core answers only; `--all-answers` is for before a deploy.
+- A case's answer runs first, then its routing checks reuse the search decision
+  and coverage check that answer just made (`Reused` in `run_evals.py`), instead
+  of paying twice. Answers go first so their timing stays real.
+- Run it soon after the free quota resets (midnight Pacific, 12:30 IST): the
+  free key is tried first, and a core run's flash calls fit in its daily quota.
+
 Every Gemini call's tokens come from the `[OffTheBar Gemini]` log lines; calls on
 a paid key are priced at list rates (`PRICES` in `run_evals.py`). Each run prints
 and records its cost: about $0.007 for a routing run of 38 cases (plus about $0.0001 per web check) even when all
@@ -101,6 +112,10 @@ A run selector and a domain filter at the top scope everything below them.
   "notes": "Why the expectations are what they are."
 }
 ```
+
+`"answer": true` makes a case eligible for a real answer; `"core": true` puts it in
+the `--answers` set (one per answer path plus known past failures). `--only`
+answers whichever `"answer"` cases it names.
 
 Every `expect` key is optional; string checks are case-insensitive:
 `search_required`, `latest_news`, `query_includes`, `query_excludes`,

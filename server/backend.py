@@ -4,6 +4,7 @@ Football analysis backend API with streaming Gemini responses.
 """
 
 from __future__ import annotations
+import json
 import random
 import re
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -22,7 +23,8 @@ from prompt_templates import (
     build_follow_ups_only_prompt,
     build_refinement_prompt,
 )
-from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage, order_context
+import football_data
+from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage, order_context, run_of_play_sources
 
 # What the answer is waiting on, streamed as a "## HALFTIME!!! <status>" line
 # at each stage: Run of Play search, web search, then "Generating" until the
@@ -35,6 +37,10 @@ HALFTIME_MARKER = "## HALFTIME!!! "
 STATUS_RUN_OF_PLAY = "Searching The Run of Play"
 STATUS_WEB = "Searching the web"
 STATUS_GENERATING = "Generating"
+# After the answer, for clients that ask (payload "sources": true): the Run of
+# Play articles it drew on, as "## SOURCES!!! [{"title": ..., "url": ...}]".
+# The clients show them as links at the end of the answer and strip the line.
+SOURCES_MARKER = "## SOURCES!!! "
 NO_NEW_UPDATES = "NO_NEW_UPDATES"   # Phase 2's "nothing to add" reply (prompt_templates.build_refinement_prompt)
 # Phase 1's reply when Run of Play's articles hold nothing that answers the
 # question (prompt_templates.build_first_draft_instruction): instead of a
@@ -246,6 +252,7 @@ class Backend_Api:
             # a "HALFTIME!!! ..." heading, so they get just the one line they
             # were built for: before the web update or the combined answer.
             stage_statuses = bool(payload.get("stage_statuses"))
+            want_sources = bool(payload.get("sources"))
 
             def stage_status(text: str) -> List[bytes]:
                 return [_status(text)] if stage_statuses else []
@@ -260,6 +267,8 @@ class Backend_Api:
 
             llm_query = _build_llm_query(conversation_history, prompt["content"])
             web_prefetch: List[Future] = []
+            # Every piece of context this answer was written from, for the log.
+            used_contexts: List[str] = []
 
             def start_web_search(planned_query: str) -> None:
                 web_prefetch.append(WEB_PREFETCH_POOL.submit(
@@ -286,10 +295,24 @@ class Backend_Api:
                 for msg in extra + [entry for entry in conversation_history if entry["role"] != "system"]
             ]
 
+            def answer_question() -> str:
+                """The question for the answer prompts. A follow-up carries what
+                the classifier resolved it to: given only "their finishing position
+                prediction?" and an article on England, an answer about Roma
+                came out about England."""
+                if conversation_history and formatted_query:
+                    return f"{prompt['content']}\n(In this conversation that means: {formatted_query})"
+                return prompt["content"]
+
+            def with_football_data(material: Optional[str]) -> str:
+                """The context, after the database's facts on what the question names."""
+                facts = football_data.context_for(f"{prompt['content']} {formatted_query or ''}")
+                return "\n\n".join(part for part in (facts, material) if part)
+
             def contents_with(instruction: str, context: Optional[str] = None) -> List[Dict[str, Any]]:
-                answer_turn = build_answer_turn(
-                    news_content if context is None else context, prompt["content"], instruction
-                )
+                material = with_football_data(news_content if context is None else context)
+                used_contexts.append(material)
+                answer_turn = build_answer_turn(material, answer_question(), instruction)
                 return history_turns + [{"role": "user", "parts": [{"text": answer_turn}]}]
 
             def stream_gemini_flash_fast(
@@ -426,6 +449,8 @@ class Backend_Api:
                     An iterator yielding UTF-8 encoded bytes chunks.
                 """
 
+                news_content_latest = with_football_data(news_content_latest)
+                used_contexts.append(news_content_latest)
                 refined_prompt = build_refinement_prompt(
                     original_question,
                     initial_response,
@@ -443,6 +468,7 @@ class Backend_Api:
                 Phase 1: Produce a brief, stylish answer based on "first draft" context.
                 Phase 2: Optionally refine the answer if updated context arrives.
                 """
+                nonlocal kb_coverage
 
                 # Phase 1 (fast)
                 def _call_phase1(client):
@@ -528,6 +554,7 @@ class Backend_Api:
 
                 if nothing_relevant or not initial_response.strip():
                     print("Phase 1 flagged nothing relevant - searching, then one combined answer.")
+                    kb_coverage = "none"
                     yield from combined_answer()
                     return
 
@@ -544,7 +571,7 @@ class Backend_Api:
                 if news_content_latest:
                     print("Streaming Phase 2: Refining with updated news...")
                     followup_response = refine_with_latest_context(
-                        prompt["content"],
+                        answer_question(),
                         initial_response,
                         news_content_latest,
                         error_messages,
@@ -620,15 +647,31 @@ class Backend_Api:
 
             def generate() -> Iterable[bytes]:
                 """Wraps answer_stream() to save the transcript, without its
-                status lines, once it ends."""
+                status lines, once it ends, and adds the sources line."""
                 response_parts: List[str] = []
                 try:
                     for chunk in answer_stream():
                         response_parts.append(chunk.decode("utf-8", errors="replace"))
                         yield chunk
+                    if want_sources:
+                        # Coverage "none" can mean nothing recent enough, so a recent
+                        # report the answer used still counts; old articles don't.
+                        sources = run_of_play_sources(
+                            news_content, prompt["content"], "".join(response_parts),
+                            include_archive=kb_coverage != "none",
+                        )
+                        print(f"[OffTheBar sources] {[source['title'] for source in sources]}")
+                        if sources:
+                            yield f"\n\n{SOURCES_MARKER}{json.dumps(sources, ensure_ascii=False)}\n".encode("utf-8")
                 finally:
-                    transcript = HALFTIME_LINE.sub("", "".join(response_parts))
-                    save_chat_turn(conversation_id, prompt["content"], re.sub(r"\n{3,}", "\n\n", transcript).strip())
+                    transcript = re.sub(r"\n{3,}", "\n\n", HALFTIME_LINE.sub("", "".join(response_parts))).strip()
+                    print("[OffTheBar context] " + json.dumps({
+                        "conversation_id": conversation_id,
+                        "question": prompt["content"],
+                        "contexts": list(dict.fromkeys(part for part in used_contexts if part)),
+                        "answer": transcript,
+                    }, ensure_ascii=False))
+                    save_chat_turn(conversation_id, prompt["content"], transcript)
 
             return Response(
                 stream_with_context(generate()),

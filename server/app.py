@@ -8,12 +8,15 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 from server.backend import conversation_endpoint
 from config_env import require_env
+import kb_search
 
 app = Flask(__name__, template_folder='./../client/html')
 
 app.secret_key = require_env("FLASK_SECRET_KEY") or os.urandom(32)
 
 CORS(app, origins=["*"])
+
+WARM_WAIT_SECONDS = 45
 
 
 @app.route("/")
@@ -39,6 +42,12 @@ def chat_api():
     }
 
     return conversation_endpoint(payload, cfg)
+
+@app.route("/api/warm")
+def warm_api():
+    # The chat pages call this on load. A cold Cloud Run instance gets almost no
+    # CPU between requests, so this stays open until start-up loading is done.
+    return {"ready": kb_search.wait_until_ready(WARM_WAIT_SECONDS)}
 
 @app.errorhandler(Exception)
 def global_handler(e):

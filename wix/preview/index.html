@@ -78,6 +78,11 @@
   window.PREVIEW_BACKEND = backend;
 
   window.fetch = (url, opts) => {
+    if (typeof url === 'string' && url.endsWith('/api/warm')) {
+      console.log('[preview] /api/warm');
+      if (backend === 'mock') return Promise.resolve(new Response('{"ready": true}', { status: 200 }));
+      return realFetch(backend === 'local' ? 'http://localhost:1338/api/warm' : url, opts);
+    }
     if (typeof url !== 'string' || !url.endsWith('/api/chat')) return realFetch(url, opts);
 
     const body = JSON.parse(opts.body);
@@ -116,6 +121,12 @@
   // that finds nothing new.
   function mockChat(body, signal) {
     const question = body.meta.content.parts[0].content;
+    if (/mock-unreachable/i.test(question)) {
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    if (/mock-busy/i.test(question)) {
+      return Promise.resolve(new Response('Rate exceeded.', { status: 429 }));
+    }
     if (/mock-error/i.test(question)) {
       return Promise.resolve(new Response('{"error": "mock failure"}', { status: 500 }));
     }
@@ -136,6 +147,13 @@
     script.push([900, '']);   // Phase 2's wait for its first words
     if (!/mock-nothing-new/i.test(question)) {
       bursts(phase2).forEach((b) => script.push([150, b]));
+    }
+    // The second link is a web page and must not show; the title's HTML must show as text.
+    if (body.sources) {
+      script.push([100, '\n\n## SOURCES!!! ' + JSON.stringify([
+        { title: 'Mock <b>Run of Play</b> article', url: 'https://www.therunofplay.com/post/mock-article' },
+        { title: 'Mock web page', url: 'https://example.com/not-run-of-play' },
+      ]) + '\n']);
     }
 
     let timers = [];
