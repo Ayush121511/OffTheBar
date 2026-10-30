@@ -13,3 +13,4 @@ client/json/
 CLAUDE.md
 PYTHONANYWHERE.md
 CLOUDRUN.md
+.cache/

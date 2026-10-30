@@ -22,7 +22,7 @@ from prompt_templates import (
     build_follow_ups_only_prompt,
     build_refinement_prompt,
 )
-from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage
+from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage, order_context
 
 # What the answer is waiting on, streamed as a "## HALFTIME!!! <status>" line
 # at each stage: Run of Play search, web search, then "Generating" until the
@@ -495,7 +495,7 @@ class Backend_Api:
                 def combined_answer() -> Iterable[bytes]:
                     # No draft: one answer from Run of Play's articles and the web together.
                     latest = yield from fetch_latest_context()
-                    combined = "\n\n".join(part for part in (news_content, latest) if part)
+                    combined = order_context(news_content, latest)
                     yield from stage_status(STATUS_GENERATING)
                     yield from stream_gemini_flash_fast(
                         contents_with(build_complete_context_instruction(), combined),

@@ -80,7 +80,9 @@ def build_answer_turn(context: str, question: str, instruction: str) -> str:
     context = (context or "").strip()
     if context:
         reference = (
-            "Reference material retrieved for this question (each piece labeled with its source and publish date):\n"
+            "Reference material retrieved for this question, in priority order - for news, the most recent first and "
+            "archive background last (each piece labeled with its source and publish date). Lead with the first pieces "
+            "that answer the question:\n"
             f'"""\n{context}\n"""'
         )
     else:

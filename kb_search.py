@@ -16,19 +16,29 @@ never seen are matched to the closest indexed word ("mesi" -> "messi"). Latest-n
 recency heavily, everything else weights relevance. The top chunks are
 always returned, whatever their age - callers label old ones as background.
 
-The keyword index is a snapshot of every chunk's metadata, loaded from
-Pinecone in a background thread (~1.7k chunks, ~10s) and refreshed every few
-hours, since ingestion runs daily. Until the first snapshot is ready, search
-ranks Pinecone's candidates alone.
+The keyword index is a snapshot of every chunk's metadata, built from the Wix
+blog the way ingest_kb.py builds what it stores in Pinecone (same ids, same
+fields), in a background thread, and refreshed every few hours since ingestion
+runs daily. It used to be read back from Pinecone, every vector included
+(~30MB), on each start and refresh; that used up Pinecone's 1GB monthly read
+allowance on 2026-10-30. A copy on disk (KB_SNAPSHOT_CACHE) serves restarts
+within the refresh interval - local reloads and eval runs. Until the first
+snapshot is ready, search ranks Pinecone's candidates alone.
+
+Pinecone calls get a deadline, and after a quota error Pinecone is skipped for
+an hour: a request over the limit took ~12s of client retries to fail.
 """
 import difflib
+import json
+import os
 import re
 import threading
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 
 from nltk.stem import PorterStemmer
 from rank_bm25 import BM25Okapi
@@ -42,8 +52,13 @@ LEXICAL_CANDIDATES = 30
 MAX_CHUNKS_PER_ARTICLE = 2
 SNAPSHOT_TTL_SECONDS = 6 * 60 * 60
 SNAPSHOT_RETRY_SECONDS = 60
-FETCH_BATCH_SIZE = 100
-FETCH_WORKERS = 8
+SNAPSHOT_CACHE = Path(os.getenv("KB_SNAPSHOT_CACHE") or Path(__file__).resolve().parent / ".cache" / "kb_snapshot.json")
+# Keyword-only candidates whose vectors are fetched for their real similarity
+# (the best by BM25); the rest rank at the lowest dense score.
+KEYWORD_ONLY_FETCH = 10
+PINECONE_DEADLINE_SECONDS = 4
+PINECONE_QUOTA_PAUSE_SECONDS = 60 * 60
+PINECONE_SLOW_PAUSE_SECONDS = 60
 
 WEIGHTS = {
     "latest": {"dense": 0.30, "bm25": 0.20, "coverage": 0.10, "recency": 0.40},
@@ -139,19 +154,67 @@ class _Snapshot:
         return corrected
 
 
+def _cached_records():
+    """The chunk records saved on disk, if saved within SNAPSHOT_TTL_SECONDS."""
+    try:
+        saved = json.loads(SNAPSHOT_CACHE.read_text())
+        if time.time() - saved["saved_at"] < SNAPSHOT_TTL_SECONDS and saved["records"]:
+            return saved["records"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def _save_records(records):
+    try:
+        SNAPSHOT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SNAPSHOT_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"saved_at": time.time(), "records": records}))
+        tmp.replace(SNAPSHOT_CACHE)
+    except OSError as exc:
+        print(f"[OffTheBar kb] couldn't save the keyword index to {SNAPSHOT_CACHE}: {exc}")
+
+
 def _load_snapshot():
-    index = get_pinecone_index()
-    ids = [item.id for page in index.list(limit=100) for item in page.vectors if item.id]
-    batches = [ids[i:i + FETCH_BATCH_SIZE] for i in range(0, len(ids), FETCH_BATCH_SIZE)]
-    records = {}
-    with ThreadPoolExecutor(FETCH_WORKERS) as pool:
-        for response in pool.map(lambda batch: index.fetch(ids=batch), batches):
-            for vid, vector in response.vectors.items():
-                if vector.metadata:
-                    records[vid] = dict(vector.metadata)
-    if not records:
-        raise RuntimeError("Pinecone returned no chunks")
+    records = _cached_records()
+    if records is None:
+        # Imported here: ingest_kb imports ragwithsearch, which imports this module.
+        from ingest_kb import wix_chunk_records
+        records = wix_chunk_records()
+        if not records:
+            raise RuntimeError("Wix returned no chunks")
+        _save_records(records)
     return _Snapshot(records)
+
+
+_pinecone_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pinecone")
+_pinecone_paused_until = 0.0
+
+
+def _note_pinecone_error(exc):
+    """After a quota error ("egress limit", 429), skip Pinecone for a while."""
+    global _pinecone_paused_until
+    text = str(exc).lower()
+    if exc is not None and ("429" in text or "quota" in text or "egress" in text):
+        _pinecone_paused_until = max(_pinecone_paused_until, time.monotonic() + PINECONE_QUOTA_PAUSE_SECONDS)
+        print(f"[OffTheBar kb] Pinecone over its limit; skipping it for {PINECONE_QUOTA_PAUSE_SECONDS // 60} min: {str(exc)[:160]}")
+
+
+def _pinecone(call):
+    """call(index) with a deadline, unless Pinecone is paused after a quota error."""
+    global _pinecone_paused_until
+    if time.monotonic() < _pinecone_paused_until:
+        raise RuntimeError("Pinecone skipped after a quota error")
+    future = _pinecone_pool.submit(lambda: call(get_pinecone_index()))
+    # A call that outlives the deadline still reports a quota error when it ends.
+    future.add_done_callback(lambda f: f.cancelled() or _note_pinecone_error(f.exception()))
+    try:
+        return future.result(timeout=PINECONE_DEADLINE_SECONDS)
+    except FutureTimeout:
+        # A healthy call takes well under a second; until this one's error
+        # (if any) arrives, don't make the next request wait too.
+        _pinecone_paused_until = max(_pinecone_paused_until, time.monotonic() + PINECONE_SLOW_PAUSE_SECONDS)
+        raise RuntimeError(f"Pinecone took over {PINECONE_DEADLINE_SECONDS}s") from None
 
 
 _snapshot = None
@@ -223,7 +286,7 @@ def hybrid_search(query, latest_news=False, top_k=4):
     query_vector = None
     try:
         query_vector = embed_texts([query])[0][0]
-        results = get_pinecone_index().query(vector=query_vector, top_k=DENSE_CANDIDATES, include_metadata=True)
+        results = _pinecone(lambda index: index.query(vector=query_vector, top_k=DENSE_CANDIDATES, include_metadata=True))
         for match in results["matches"]:
             dense[match["id"]] = match["score"]
             candidates[match["id"]] = dict(match["metadata"])
@@ -250,10 +313,11 @@ def hybrid_search(query, latest_news=False, top_k=4):
 
     # Keyword-only hits fell outside Pinecone's top DENSE_CANDIDATES; fetch
     # their vectors so they're fused on their real similarity, not dropped to 0.
-    keyword_only = [vid for vid in candidates if vid not in dense]
-    if keyword_only and query_vector is not None:
+    keyword_only = sorted((vid for vid in candidates if vid not in dense), key=lambda vid: -bm25.get(vid, 0.0))
+    keyword_only = keyword_only[:KEYWORD_ONLY_FETCH]
+    if keyword_only and query_vector is not None and dense:
         try:
-            fetched = get_pinecone_index().fetch(ids=keyword_only).vectors
+            fetched = _pinecone(lambda index: index.fetch(ids=keyword_only)).vectors
             q = np.asarray(query_vector)
             for vid, vector in fetched.items():
                 v = np.asarray(vector.values)

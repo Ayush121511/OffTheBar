@@ -99,29 +99,20 @@ def list_wix_tags() -> Dict[str, str]:
     return labels
 
 
-def _vectors_for_post(post: Dict[str, Any], tag_labels: Dict[str, str] | None = None) -> List[Dict[str, Any]]:
+def chunk_records(post: Dict[str, Any], tag_labels: Dict[str, str] | None = None) -> List[Dict[str, Any]]:
+    """A post's chunks as {"id", "metadata"} - the ids and metadata stored in
+    Pinecone. kb_search builds its keyword index from these too."""
     post_id = post["id"]
     title = post.get("title", "")
     content_text = (post.get("contentText") or "").strip()
     created = post.get("firstPublishedDate", "")
     modified = post.get("lastPublishedDate", created)
     tags = [tag_labels[t] for t in post.get("tagIds", []) if tag_labels and tag_labels.get(t)]
-
     if not content_text:
-        print(f"Skipping '{title}' ({post_id}) - no content text")
         return []
-
-    chunks = chunk_article(content_text, max_chunk_length=CHUNK_MAX_CHARS)
-    # Each chunk is embedded with its article's title in front, so a chunk
-    # that only says "he" still matches searches for who the article is about.
-    embeddings, model_used = embed_texts([f"{title}\n\n{chunk}" for chunk in chunks])
-    print(f"'{title}': {len(chunks)} chunks, embedded with {model_used}")
-
-    vectors = []
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        vectors.append({
+    return [
+        {
             "id": f"{post_id}-{i}",
-            "values": embedding,
             "metadata": {
                 "doc_id": post_id,
                 "doc_name": f"{title} - {i + 1}",
@@ -132,8 +123,28 @@ def _vectors_for_post(post: Dict[str, Any], tag_labels: Dict[str, str] | None = 
                 "modified": modified,
                 "chunk": chunk,
             },
-        })
-    return vectors
+        }
+        for i, chunk in enumerate(chunk_article(content_text, max_chunk_length=CHUNK_MAX_CHARS))
+    ]
+
+
+def wix_chunk_records() -> Dict[str, Dict[str, Any]]:
+    """Every chunk's metadata by vector id, straight from the Wix blog."""
+    tag_labels = list_wix_tags()
+    return {record["id"]: record["metadata"] for post in list_wix_posts() for record in chunk_records(post, tag_labels)}
+
+
+def _vectors_for_post(post: Dict[str, Any], tag_labels: Dict[str, str] | None = None) -> List[Dict[str, Any]]:
+    records = chunk_records(post, tag_labels)
+    title = post.get("title", "")
+    if not records:
+        print(f"Skipping '{title}' ({post['id']}) - no content text")
+        return []
+    # Each chunk is embedded with its article's title in front, so a chunk
+    # that only says "he" still matches searches for who the article is about.
+    embeddings, model_used = embed_texts([f"{title}\n\n{record['metadata']['chunk']}" for record in records])
+    print(f"'{title}': {len(records)} chunks, embedded with {model_used}")
+    return [dict(record, values=embedding) for record, embedding in zip(records, embeddings)]
 
 
 def ingest() -> None:

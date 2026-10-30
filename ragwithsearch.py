@@ -214,6 +214,9 @@ def _word_tokens(text):
 # "Latest news" questions only get articles published within this many days;
 # older or undated articles are dropped rather than presented as current.
 LATEST_NEWS_MAX_AGE_DAYS = 30
+# For those questions, Run of Play's articles only count as answering them
+# (a draft from them, or an answer from them alone) if one is this recent.
+LATEST_NEWS_COVERAGE_MAX_AGE_DAYS = 14
 LATEST_NEWS_MARKERS = [
     "latest", "news", "recent", "recently", "update", "updates", "today",
     "tonight", "yesterday", "last night", "this morning", "this week",
@@ -225,6 +228,7 @@ LATEST_NEWS_MARKERS = [
     "what's next", "whats next", "next match", "next game", "upcoming", "title race", "standings",
     # slang for the same ("yo whats good with united rn")
     "rn", "what's good", "whats good", "what's happening", "whats happening",
+    "going on", "what's up", "whats up", "getting on",
 ]
 
 
@@ -403,6 +407,11 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             _log_query("kb_failed", str(exc))
             hits = []
         if hits:
+            if latest_news:
+                # Newest first: the answer leans on what it reads first, and in
+                # relevance order "what's going on with nottingham" opened with
+                # April's relegation fight, ahead of a 20-day-old article.
+                hits = sorted(hits, key=lambda hit: hit["age_days"] if hit["age_days"] is not None else float("inf"))
             kb_context = "\n\n".join(_format_kb_hit(hit) for hit in hits)
             # Whether these articles are enough on their own is the backend's
             # call (judge_kb_coverage); the web search is left to Phase 2.
@@ -823,6 +832,20 @@ def classify_and_build_query(user_question: str) -> dict:
 KB_COVERAGE = ("full", "partial", "none")
 
 
+RUN_OF_PLAY_BLOCK = re.compile(r"(?=\[RUN OF PLAY (?:CONTEXT|ARCHIVE))")
+
+
+def order_context(kb_context, web_context):
+    """Context for an answer from both sources, in priority order: Run of
+    Play's recent articles, then the web results, then Run of Play's archive.
+    The archive used to come before the web news, and answers lead with what
+    they read first."""
+    blocks = [block.strip() for block in RUN_OF_PLAY_BLOCK.split(kb_context or "") if block.strip()]
+    recent = [block for block in blocks if not block.startswith("[RUN OF PLAY ARCHIVE")]
+    archive = [block for block in blocks if block.startswith("[RUN OF PLAY ARCHIVE")]
+    return "\n\n".join(recent + ([web_context.strip()] if web_context and web_context.strip() else []) + archive)
+
+
 def _kb_context_ages(context):
     """Ages in days of the recent Run of Play articles in a context, from
     their "[RUN OF PLAY CONTEXT - published ..., N days ago]" labels."""
@@ -844,11 +867,15 @@ def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
     """
     if not (context or "").strip():
         return "none"
-    if _is_latest_news_question(question, search_query) and "[RUN OF PLAY CONTEXT" not in context:
-        # Every hit is labeled ARCHIVE (older than LATEST_NEWS_MAX_AGE_DAYS):
-        # it can't hold the current answer, and flash-lite kept rating such
-        # sets "partial" (a 55-day-old result for "what's next in the title race").
-        _log_query("kb_coverage", {"coverage": "none", "reason": "latest-news question, no Run of Play article from the last 30 days"})
+    if _is_latest_news_question(question, search_query) and not any(
+        age <= LATEST_NEWS_COVERAGE_MAX_AGE_DAYS for age in _kb_context_ages(context)
+    ):
+        # Nothing recent enough to hold the current answer, and flash-lite kept
+        # rating such sets "partial" (a 55-day-old result for "what's next in
+        # the title race"; a 20-day-old FPL tip and April's relegation fight
+        # for "what's going on with nottingham") - a draft from them led with
+        # old news before the web update.
+        _log_query("kb_coverage", {"coverage": "none", "reason": f"latest-news question, no Run of Play article from the last {LATEST_NEWS_COVERAGE_MAX_AGE_DAYS} days"})
         return "none"
     if _is_fixture_question(question, search_query) and not any(
         age <= FIXTURE_MAX_AGE_DAYS for age in _kb_context_ages(context)

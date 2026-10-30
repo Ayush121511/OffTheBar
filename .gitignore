@@ -23,3 +23,6 @@ offthebar-*.json
 
 # Eval run reports (evals/run_evals.py)
 evals/reports/
+
+# keyword index copy (kb_search.SNAPSHOT_CACHE)
+.cache/

@@ -728,6 +728,22 @@
         ]
       },
       "notes": "The answer once gave the PSG match from ten days earlier as Barcelona's upcoming fixture: Bing News returned 10- and 13-day-old previews of played matches for 'Barcelona upcoming fixture predicted XI', while 'Barcelona preview' over the last week found same-day previews of the real next match, Alavés. Next-match questions now search '<club> preview predicted lineup' over the last week and keep only the last 3 days."
+    },
+    {
+      "id": "nottingham-going-on",
+      "domain": "latest-news",
+      "question": "what's going on with nottingham",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "coverage_in": [
+          "none"
+        ],
+        "path_in": [
+          "combined"
+        ]
+      },
+      "notes": "Was not recognised as a current-events question ('going on'), so a 20-day-old FPL tip and April's relegation fight were judged a partial answer and the draft led with them. Current-events questions now need a Run of Play article from the last 14 days to draft from."
     }
   ]
 }
