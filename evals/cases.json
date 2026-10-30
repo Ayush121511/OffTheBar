@@ -1,6 +1,6 @@
 {
   "as_of": "2026-10-30",
-  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py).",
+  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py). 'web_soccer_only' runs the web search as Phase 2 would and fails on any American football in what the answer would see; 'web_query_includes' checks the query actually sent to Bing News (after the soccer rewrite).",
   "domains": {
     "latest-news": "Current events, form and standings - needs fresh information.",
     "match-results": "How a specific recent match went.",
@@ -44,7 +44,8 @@
         "latest_news": true,
         "query_excludes": [
           "NFL"
-        ]
+        ],
+        "web_soccer_only": true
       },
       "notes": "Generic wording with a typo; Bing News returned NFL stories for generic queries. Needs an Ask next block even when the update adds nothing."
     },
@@ -580,7 +581,8 @@
           "Bo Nix",
           "Denver",
           "Esposito"
-        ]
+        ],
+        "web_soccer_only": true
       },
       "notes": "The answer once filled itself with American football (Denver QB Bo Nix, a high-school hat-trick) from generic web results."
     },
@@ -635,6 +637,71 @@
         "latest_news": true
       },
       "domain": "robustness"
+    },
+    {
+      "id": "football-scores-today",
+      "domain": "robustness",
+      "question": "football scores today",
+      "expect": {
+        "search_required": true,
+        "web_soccer_only": true,
+        "web_query_includes": [
+          "Premier League"
+        ]
+      },
+      "notes": "Bare 'football' on Bing News: 1 of 2 results was high-school American football."
+    },
+    {
+      "id": "football-last-night",
+      "domain": "robustness",
+      "question": "who won the football last night",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "web_soccer_only": true
+      },
+      "notes": "Bing News returned only NFL games (Packers-Panthers, Rams-Broncos) for this wording."
+    },
+    {
+      "id": "football-injury-news",
+      "domain": "robustness",
+      "question": "football injury news",
+      "expect": {
+        "search_required": true,
+        "web_soccer_only": true,
+        "web_query_includes": [
+          "Premier League"
+        ]
+      },
+      "notes": "8 of 8 Bing News results were NFL fantasy injury updates before the soccer rewrite."
+    },
+    {
+      "id": "best-football-player-week",
+      "domain": "robustness",
+      "question": "best football player this week",
+      "expect": {
+        "search_required": true,
+        "web_soccer_only": true
+      },
+      "notes": "5 of 5 Bing News results were NFL fantasy start/sit and waiver-wire pages."
+    },
+    {
+      "id": "fantasy-football-tips",
+      "domain": "robustness",
+      "question": "fantasy football tips this week",
+      "answer": true,
+      "expect": {
+        "web_soccer_only": true,
+        "web_query_includes": [
+          "Fantasy Premier League"
+        ],
+        "answer_contains_any": [
+          "FPL",
+          "Fantasy Premier League",
+          "Premier League"
+        ]
+      },
+      "notes": "To Bing, 'fantasy football' is the NFL (10 of 10 results). For The Run of Play it means FPL, which must stay allowed."
     }
   ]
 }

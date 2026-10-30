@@ -21,9 +21,10 @@ import time
 import unicodedata
 import requests
 import urllib.robotparser
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from config_env import require_env
-from kb_search import hybrid_search, iso_age_days
+from kb_search import hybrid_search, iso_age_days, known_tags
 from rank_bm25 import BM25Okapi
 from nltk.tokenize import word_tokenize
 from nltk.tokenize import sent_tokenize
@@ -94,7 +95,7 @@ def rank_chunks_bm25(chunks, query, top_k=5):
 from datetime import date
 from datetime import datetime, timedelta, timezone
 
-from crawl4AI import crawl_page
+from crawl4AI import crawl_pages
 
 def _log_query(label, value):
     print(f"[OffTheBar query] {label}: {value!r}")
@@ -109,19 +110,97 @@ RELEVANCE_STOPWORDS = {
 }
 
 
-# Bing News treats "football" as American football for generic queries ("best
-# performance last week" returned NFL and high-school stories, which reached
-# an answer). Results whose headline or snippet carries these are dropped.
-# Not "sack"/"interception" - those are association football words too.
+# American football must never reach an answer. Bing News reads a bare
+# "football" as the NFL ("football injury news": 8 of 8 results; "best
+# football player this week": 5 of 5, fantasy start/sit and waiver pages), so
+# web results go through three layers: the search query names soccer
+# (_soccer_search_query), a flash-lite check keeps only results about
+# association football (_keep_soccer_results), and these unambiguous terms
+# drop results and scraped paragraphs before either. Not "sack" or
+# "interception" (association football words too), not team names ("Eagles",
+# "Saints", "Lions" are Crystal Palace, Southampton, Millwall), and not
+# "fantasy football" (Fantasy Premier League is welcome).
 AMERICAN_FOOTBALL = re.compile(
     r"\b(?:nfl|ncaa|quarterbacks?|qbs?|touchdowns?|super bowl|gridiron|american football|college football|"
-    r"high school|varsity|wide receivers?|running backs?|linebackers?|field goals?|rushing yards|passing yards)\b",
+    r"high school|varsity|wide receivers?|running backs?|linebackers?|tight ends?|field goals?|rushing yards|"
+    r"passing yards|end zone|heisman|flag football|(?:thursday|sunday|monday) night football|start[/ -]sit|"
+    r"waiver wire|ppr)\b",
     re.I,
 )
+
+# Words that mark text as association football, alongside Run of Play's own
+# tags (clubs, players, competitions).
+SOCCER_TERMS = re.compile(
+    r"\b(?:soccer|fpl|fantasy premier league|premier league|la ?liga|serie a|bundesliga|ligue 1|eredivisie|mls|"
+    r"champions league|europa league|conference league|fa cup|carabao cup|efl|world cup|euro \d{4}|copa|afcon|"
+    r"uefa|fifa|ballon d ?or|clasico)\b"
+)
+# Run of Play tags that don't mark text as soccer on their own ("USA
+# Football" governs American football; the AFC is an NFL conference too;
+# Run of Play's "Fantasy Football" means FPL, Bing's the NFL; CAS hears every sport).
+AMBIGUOUS_TAGS = {"football", "fantasy football", "usa", "canada", "australia", "ireland", "afc", "cas", "transfer news"}
 
 
 def _is_american_football(result):
     return bool(AMERICAN_FOOTBALL.search(f"{result.get('title', '')} {result.get('content', '')}"))
+
+
+def _folded_words(text):
+    """Lowercase, accent-folded words, in order."""
+    return re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower())
+
+
+def _names_soccer(text):
+    """Whether the text names a soccer competition or one of Run of Play's
+    tags (whole names: "lionel messi", "real madrid")."""
+    words = _folded_words(text)
+    if SOCCER_TERMS.search(" ".join(words)):
+        return True
+    phrases = {" ".join(words[i:i + n]) for n in range(1, 5) for i in range(len(words) - n + 1)}
+    tags = {" ".join(_folded_words(tag)) for tag in known_tags()} - AMBIGUOUS_TAGS
+    return bool(phrases & tags)
+
+
+def _soccer_search_query(query):
+    """The query as sent to Bing News. "Fantasy football" becomes Fantasy
+    Premier League, and a "football" query that names no soccer competition,
+    club or player gets "Premier League" in its place: "football injury news"
+    returned 8 NFL stories of 8, "Premier League injury news" 10 soccer ones."""
+    query = re.sub(r"\bfantasy football\b", "Fantasy Premier League", query, flags=re.I)
+    if not re.search(r"\bfootball\b", query, re.I) or _names_soccer(query):
+        return query
+    return " ".join(re.sub(r"\bfootball\b", "Premier League", query, flags=re.I).split())
+
+
+def _keep_soccer_results(question, results):
+    """The results about association football, judged by gemini-2.5-flash-lite
+    from their site, headline and snippet. If that check fails, only results
+    that name soccer outright are kept - never the uncertain ones."""
+    if not results:
+        return results
+    listing = "\n".join(
+        f"{n}. [{urlparse(r.get('url', '')).hostname or ''}] {r.get('title', '')} - {(r.get('content') or '')[:200]}"
+        for n, r in enumerate(results, 1)
+    )
+    prompt = build_soccer_results_prompt(question, listing)
+    try:
+        response = call_gemini_with_key_retry(
+            "gemini-2.5-flash-lite",
+            lambda client: client.models.generate_content(
+                model="gemini-2.5-flash-lite", contents=prompt, config=DECISION_CONFIG
+            ),
+        )
+        verdict = _best_effort_json(response.text)
+        if not isinstance(verdict.get("keep"), list):
+            raise ValueError(f"no keep list in {response.text!r}")
+        keep = {int(n) for n in verdict["keep"]}
+    except Exception as exc:
+        print(f"Soccer check failed, keeping only results that name soccer: {exc}")
+        keep = {n for n, r in enumerate(results, 1) if _names_soccer(f"{r.get('title', '')} {r.get('content', '')}")}
+    for n, r in enumerate(results, 1):
+        if n not in keep:
+            print(f"Dropping {r['url']} - not association football")
+    return [r for n, r in enumerate(results, 1) if n in keep]
 
 
 def _word_tokens(text):
@@ -214,12 +293,21 @@ def _published_label(result):
 KB_TOP_K = 4
 
 # Web results per answer: scraped in full, then headline + snippet only.
-# Scraping stops after WEB_SCRAPE_ATTEMPTS pages either way: with MSN, NYT and
-# others blocking the scraper, trying every result until two succeeded took
-# the combined Clásico answer 50s to its first words.
+# At most WEB_SCRAPE_ATTEMPTS pages are fetched, all at once: with MSN, NYT
+# and others blocking the scraper, trying every result until two succeeded
+# took the combined Clásico answer 50s to its first words.
 WEB_SCRAPED_SOURCES = 2
 WEB_SNIPPET_SOURCES = 4
 WEB_SCRAPE_ATTEMPTS = 3
+
+# Sites whose pages always come back as anti-bot walls: their headline and
+# snippet are used without trying to scrape them.
+SCRAPE_BLOCKED_DOMAINS = ("msn.com", "nytimes.com", "thesun.co.uk")
+
+
+def _scrape_blocked(url):
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == domain or host.endswith("." + domain) for domain in SCRAPE_BLOCKED_DOMAINS)
 
 
 def _days_ago(age):
@@ -286,16 +374,20 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
         _log_query("web_search_skipped", "search_required is false")
         return fallback_context or "", False, formatted_query
 
+    # Results are matched against the query as sent, so a rewritten "Premier
+    # League injury news" doesn't drop soccer headlines for lacking "football".
+    search_query = _soccer_search_query(retrieval_query)
+    relevance_query = search_query
     url = f"{require_env('SEARXNG_URL').rstrip('/')}/search"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     results = {"results": []}
     print("Searching for news context...")
-    _log_query("searx_query", retrieval_query)
+    _log_query("searx_query", search_query)
     try:
         params = {
-            "q": retrieval_query,
+            "q": search_query,
             "format": "json",
             "language": "en",
             "safesearch": 2,
@@ -392,37 +484,45 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             _log_query("web_search_no_recent_results", formatted_query)
             return "", search_required, formatted_query
 
+    candidate_results = _keep_soccer_results(query, candidate_results)
+    if not candidate_results:
+        print("No association football results; using no web context.")
+        _log_query("web_search_no_soccer_results", formatted_query)
+        return "", search_required, formatted_query
+
     # Full text from up to WEB_SCRAPED_SOURCES pages. Results that are
     # blocked (robots.txt, anti-bot walls like NYT's) or past that limit
     # still contribute Bing News's own headline and snippet, so one blocked
     # scrape no longer leaves the answer with nothing.
+    to_scrape = [ctx["url"] for ctx in candidate_results if not _scrape_blocked(ctx["url"])][:WEB_SCRAPE_ATTEMPTS]
+    with ThreadPoolExecutor(max_workers=WEB_SCRAPE_ATTEMPTS) as pool:
+        robots = dict(zip(to_scrape, pool.map(is_scraping_allowed, to_scrape)))
+    for page_url, (allowed, reason) in robots.items():
+        if not allowed:
+            print(f"Skipping {page_url} - scraping not allowed by robots.txt")
+            print(reason)
+    pages = crawl_pages([page_url for page_url in to_scrape if robots[page_url][0]])
+
     prompt_context = []
     snippet_only = []
-    attempts = 0
     for ctx in candidate_results:
-        if len(prompt_context) >= WEB_SCRAPED_SOURCES or attempts >= WEB_SCRAPE_ATTEMPTS:
-            snippet_only.append(ctx)
-            continue
-        attempts += 1
-        scrape_premission = is_scraping_allowed(ctx["url"])
-        if scrape_premission[0] == False:
-            print(f"Skipping {ctx['url']} - scraping not allowed by robots.txt")
-            print(scrape_premission[1])
-            snippet_only.append(ctx)
-            continue
-
-        page_text = crawl_page(ctx['url'])
-        if not page_text:
-            print(f"Skipping {ctx['url']} - no content found")
+        page_text = pages.get(ctx["url"], "")
+        if len(prompt_context) >= WEB_SCRAPED_SOURCES or not page_text:
+            if ctx["url"] in pages and not page_text:
+                print(f"Skipping {ctx['url']} - no content found")
             snippet_only.append(ctx)
             continue
 
         page_metadata = page_text[:200]  # Get first 1000 characters as metadata
+        if AMERICAN_FOOTBALL.search(page_metadata):
+            page_metadata = ""
         print("Chunking started for", ctx['url'])
-        page_chunks = chunk_article(page_text)
+        # A soccer article's page still carries other sports in its menus and
+        # sidebars, so paragraphs with American football terms are dropped.
+        page_chunks = [chunk for chunk in chunk_article(page_text) if not AMERICAN_FOOTBALL.search(chunk)]
         print(f"Page chunks for {ctx['url']}: {len(page_chunks)}")
         if not page_chunks:
-            # crawl_page can return text that survives the `if not page_text`
+            # crawl_pages can return text that survives the `if not page_text`
             # check (e.g. whitespace, or a page blocked by anti-bot
             # protection that still yields a near-empty string) but has no
             # tokenizable sentences. BM25Okapi divides by corpus size, so an
@@ -465,7 +565,7 @@ from gemini_utils import call_gemini_with_key_retry
 # Gemini's default temperature the same question flipped between runs
 # (search queries dropping "Carrick", coverage "none" vs "partial").
 DECISION_CONFIG = genai_types.GenerateContentConfig(temperature=0)
-from prompt_templates import build_relevance_check_prompt, build_search_classifier_prompt
+from prompt_templates import build_relevance_check_prompt, build_search_classifier_prompt, build_soccer_results_prompt
 
 
 def _has_marker(text: str, markers: list[str]) -> bool:
@@ -706,7 +806,10 @@ def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
     return coverage if coverage in KB_COVERAGE else "partial"
 
 
-def ask_from_llm(token,query, fallback_context=None, formatted_query = None, force_search=False):
+def ask_from_llm(token,query, fallback_context=None, formatted_query = None, force_search=False, on_search_planned=None):
+    """on_search_planned(formatted_query), if given, is called as soon as the
+    classifier wants a search - before the Run of Play search - so the caller
+    can start the web search alongside it."""
     print("Hello query")
     print("query loading")
     search_required = False
@@ -736,6 +839,8 @@ def ask_from_llm(token,query, fallback_context=None, formatted_query = None, for
     print("Formatted Query:", formatted_query)
     _log_query("final_formatted_query", formatted_query)
     _log_query("search_required", search_required)
+    if on_search_planned and search_required and fallback_context is None:
+        on_search_planned(formatted_query)
 
     return build_news_context(
         primary_question,

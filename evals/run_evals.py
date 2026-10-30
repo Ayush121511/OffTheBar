@@ -2,15 +2,18 @@
 Evaluate the Off The Bar pipeline against evals/cases.json and build the dashboard.
 
     python evals/run_evals.py                  # routing sections only - flash-lite calls, well under a cent
-    python evals/run_evals.py --answers        # + real answers for cases marked "answer": true (~1-2 cents)
+    python evals/run_evals.py --answers        # + real answers for cases marked "answer": true (~7 cents)
     python evals/run_evals.py --only clasico-result,false-nine --answers
     python evals/run_evals.py --domain latest-news
 
 Every case belongs to a domain (cases.json "domains"); every check belongs to a
 section (evals/scoring.py):
 
-  understanding  search decision (1 flash-lite call), search query, latest-news detection
-  retrieval      Run of Play articles from the hybrid search (free)
+  understanding  search decision (1 flash-lite call), search query, latest-news detection,
+                 the query sent to Bing News (web_query_includes)
+  retrieval      Run of Play articles from the hybrid search (free); for cases with
+                 web_* expectations, the web search as Phase 2 runs it (1 flash-lite
+                 call) must hold no American football
   routing        coverage verdict (1 flash-lite call) and the answer path it picks
   accuracy       --answers: expected facts present, stale/contradicting claims absent
   quality        --answers: rubric from a flash-lite judge - answers the question,
@@ -69,9 +72,19 @@ LEAKS = ["NO_NEW_UPDATES", "NO_RELEVANT_CONTEXT", "[RUN OF PLAY", "RUN OF PLAY A
 # Talk about its sources the persona shouldn't do ("Argentina dispatch Benin" is fine).
 JARGON = re.compile(r"\bdispatches\b|\b(?:our|latest|recent) dispatch\b|\bdispatch from\b|\breference material\b|"
                     r"\bcontext (?:given|provided)\b|\bthe wires\b|\bour desk\b", re.I)
-# Association football only - no NFL, ever, even as a contrast.
-AMERICAN_FOOTBALL = re.compile(r"\b(?:nfl|quarterbacks?|touchdowns?|super bowl|gridiron|american football|college football|"
-                               r"other kind of football)\b|\bQBs?\b", re.I)
+# Association football only - no NFL, ever, even as a contrast. Wider than the
+# pipeline's own filter (ragwithsearch.AMERICAN_FOOTBALL), so it can catch what
+# that misses: adds NFL team names that aren't also soccer nicknames (not
+# Eagles, Saints, Lions, Rams...).
+AMERICAN_FOOTBALL = re.compile(
+    r"\b(?:nfl|ncaa|quarterbacks?|qbs?|touchdowns?|super bowl|gridiron|american football|college football|"
+    r"other kind of football|high school football|flag football|tight ends?|wide receivers?|running backs?|"
+    r"linebackers?|end zone|heisman|(?:thursday|sunday|monday) night football|start[/ -]sit|waiver wire|"
+    r"chiefs|cowboys|49ers|packers|steelers|ravens|broncos|patriots|vikings|seahawks|commanders|jaguars|"
+    r"buccaneers|bengals|texans|colts|raiders|falcons)\b",
+    re.I,
+)
+SEARX_QUERY_LINE = re.compile(r"\[OffTheBar query\] searx_query: (['\"])(.*)\1$", re.M)
 # Seconds to the first words, per answer path. Full marks within budget,
 # falling to 0 at twice the budget.
 LATENCY_BUDGET = {"single": 15, "draft_update": 8, "combined": 25}
@@ -103,10 +116,9 @@ def route_case(case):
     question = case["question"]
     checks, info = [], {}
     log = io.StringIO()
+    llm_query = _build_llm_query(case.get("history", []), question)
     with contextlib.redirect_stdout(log):
-        context, search_required, formatted_query = ragwithsearch.ask_from_llm(
-            "", _build_llm_query(case.get("history", []), question)
-        )
+        context, search_required, formatted_query = ragwithsearch.ask_from_llm("", llm_query)
         latest = ragwithsearch._is_latest_news_question(question, formatted_query)
         coverage = ragwithsearch.judge_kb_coverage(question, formatted_query, context) if search_required else None
     titles = re.findall(r"^Article: (.+)$", context, re.M)
@@ -134,6 +146,26 @@ def route_case(case):
         check(checks, "routing", "coverage", coverage in expect["coverage_in"], f"got {coverage}")
     if "path_in" in expect:
         check(checks, "routing", "path", path in expect["path_in"], f"got {path}")
+
+    # The web search, exactly as Phase 2 runs it (1 flash-lite call for the
+    # soccer check). Run whenever a case has web expectations, even if the
+    # classifier wanted no search, so the filtering itself is always tested.
+    if any(key.startswith("web_") for key in expect):
+        web_log = io.StringIO()
+        with contextlib.redirect_stdout(web_log):
+            web_context, _, _ = ragwithsearch.ask_from_llm("", llm_query, "", formatted_query or question, force_search=True)
+        log.write(web_log.getvalue())
+        sent = SEARX_QUERY_LINE.findall(web_log.getvalue())
+        web_query = sent[-1][1] if sent else ""
+        web_titles = re.findall(r"^NEWS[^\n]*? - (.+?) :  ", web_context, re.M)
+        info.update(web_query=web_query, web_titles=web_titles)
+        for needle in expect.get("web_query_includes", []):
+            check(checks, "understanding", "web query", contains(web_query, needle),
+                  f"{needle!r} missing from {web_query!r}")
+        if expect.get("web_soccer_only"):
+            found = sorted(set(m.lower() for m in AMERICAN_FOOTBALL.findall(web_context)))
+            check(checks, "retrieval", "web: soccer only", not found,
+                  f"found {found}" if found else f"{len(web_titles)} results, none American football")
     return checks, info, log.getvalue()
 
 
@@ -207,9 +239,10 @@ def answer_case(case):
         total = time.time() - start
         response.close()
     text = re.sub(r"\n{3,}", "\n\n", HALFTIME_LINE.sub("", raw)).strip()
+    # Every answer streams status lines now, so the path comes from the log.
     if "doesn't answer the question" in log.getvalue() or "flagged nothing relevant" in log.getvalue():
         path = "combined"
-    elif HALFTIME_LINE.search(raw):
+    elif "=== Phase 1 starting ===" in log.getvalue():
         path = "draft_update"
     else:
         path = "single"
@@ -275,9 +308,15 @@ def main():
     if unknown:
         sys.exit(f"cases.json: domains not listed under 'domains': {sorted(unknown)}")
     if args.only:
-        cases = [c for c in cases if c["id"] in set(args.only.split(","))]
+        wanted = set(args.only.split(","))
+        if missing := wanted - {c["id"] for c in cases}:
+            sys.exit(f"--only: no such case ids: {sorted(missing)}")
+        cases = [c for c in cases if c["id"] in wanted]
     if args.domain:
-        cases = [c for c in cases if c["domain"] in set(args.domain.split(","))]
+        wanted = set(args.domain.split(","))
+        if missing := wanted - set(spec["domains"]):
+            sys.exit(f"--domain: no such domains: {sorted(missing)}")
+        cases = [c for c in cases if c["domain"] in wanted]
 
     print(f"Loading the Run of Play keyword index... ({len(cases)} cases, as of {spec.get('as_of')})")
     with contextlib.redirect_stdout(io.StringIO()):
@@ -317,7 +356,7 @@ def main():
     for domain, d in scores["domains"].items():
         print(f"  {domain:15} {pct(d['overall'])}  {d['cases_passed']}/{d['cases']}")
     print(f"\nGemini calls: {len(all_calls)} ({by_tier['free']} free key, {by_tier['paid']} paid key) - "
-          f"estimated cost ${cost:.4f}; {time.time() - started:.0f}s")
+          f"estimated cost ${cost:.4f} (₹{cost * dashboard.USD_TO_INR:.2f}); {time.time() - started:.0f}s")
 
     REPORTS.mkdir(exist_ok=True)
     out = REPORTS / f"{datetime.now():%Y%m%d-%H%M%S}{'-answers' if args.answers else ''}.json"

@@ -110,9 +110,10 @@
     el.hidden = false;
   }
 
-  // Imitates server/backend.py's two-phase stream: draft, HALFTIME status line, pause,
-  // refinement. A message containing `mock-nothing-new` ends on the draft, like a
-  // Phase 2 that finds nothing new.
+  // Imitates server/backend.py's two-phase stream: a status line per stage
+  // (Run of Play search, Generating, draft, web search, Generating, refinement).
+  // A message containing `mock-nothing-new` ends on the draft, like a Phase 2
+  // that finds nothing new.
   function mockChat(body, signal) {
     const question = body.meta.content.parts[0].content;
     if (/mock-error/i.test(question)) {
@@ -127,10 +128,12 @@
     // Bursts of ~80 characters, like Gemini's real stream, so the page's
     // word-by-word reveal is what makes it look smooth.
     const bursts = (text) => text.match(/[\s\S]{1,80}(\s|$)/g) || [];
-    const script = [];
+    const status = (text) => `## HALFTIME!!! ${text}\n\n`;
+    const script = [[0, status('Searching The Run of Play')], [1800, status('Generating')], [900, '']];
     bursts(phase1).forEach((b) => script.push([150, b]));
-    script.push([60, '\n\n## HALFTIME!!! Checking the latest news\n\n']);
-    script.push([2500, '']);   // Phase 2 retrieval time
+    script.push([60, '\n\n' + status('Searching the web')]);
+    script.push([2000, status('Generating')]);
+    script.push([900, '']);   // Phase 2's wait for its first words
     if (!/mock-nothing-new/i.test(question)) {
       bursts(phase2).forEach((b) => script.push([150, b]));
     }

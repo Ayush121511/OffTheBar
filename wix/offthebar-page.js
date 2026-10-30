@@ -10,10 +10,12 @@ const BOT_AVATAR  = 'https://static.wixstatic.com/media/5dd29f_d03e44b4f7f1481ab
 const SEND_READY_LABEL = '➤ Send';
 const SEND_BUSY_LABEL  = '⏸ Generating…';
 
-// The backend streams "## HALFTIME!!! <status>" between its Phase 1 draft and
-// Phase 2 refinement; only the status is shown (see renderBot).
-const HALFTIME_LINE = /^##\s*HALFTIME!!!\s*(.*)$/m;
-const DEFAULT_PHASE2_STATUS = 'Checking the latest news';
+// The backend streams a "## HALFTIME!!! <status>" line at each stage
+// ("Searching The Run of Play", "Searching the web", "Generating"); only the
+// latest status shows, while nothing follows it (see renderBot).
+const HALFTIME_LINES = /^##\s*HALFTIME!!!\s*(.*)$/gm;
+const FIRST_STATUS = 'Searching The Run of Play';   // shown before the first chunk arrives
+const DEFAULT_STATUS = 'Generating';
 
 // Full answers end with an "Ask next:" line and a short list of follow-up
 // prompts (the backend's prompt asks for exactly that). They're cut from the
@@ -93,11 +95,16 @@ function escapeHtml(s) {
     .replace(/\r?\n/g, '<br>');
 }
 
-// The status while Phase 2 loads (nothing after the HALFTIME line yet), else null.
-function phase2Status(text) {
-  const match = text.match(HALFTIME_LINE);
-  if (!match || text.slice(match.index + match[0].length).trim()) return null;
-  return match[1].trim() || DEFAULT_PHASE2_STATUS;
+// The latest status, while nothing follows its line yet; else null.
+function currentStatus(text) {
+  const matches = [...text.matchAll(HALFTIME_LINES)];
+  const last = matches[matches.length - 1];
+  if (!last || text.slice(last.index + last[0].length).trim()) return null;
+  return last[1].trim() || DEFAULT_STATUS;
+}
+
+function statusHtml(status) {
+  return `<div class="otb-status" role="status">${escapeHtml(status)}</div>`;
 }
 
 function splitFollowUps(text) {
@@ -128,22 +135,22 @@ function followUpButtons(followUps) {
   return `<div class="otb-suggestions">${buttons}</div>`;
 }
 
-// Same as client/js/chat.js: while Phase 2 loads, its status shows under the
-// draft as a quiet shimmer line with a live seconds counter (.otb-status in
-// chat-iframe.html), and goes away once Phase 2 text arrives or the answer
-// ends. Follow-up buttons only appear on the final render.
+// Same as client/js/chat.js: the current status shows (under the draft, if
+// there is one) as a quiet shimmer line with a live seconds counter
+// (.otb-status in chat-iframe.html), and goes away once text arrives or the
+// answer ends. Follow-up buttons only appear on the final render.
 function renderBot(text, final = false) {
-  const status = phase2Status(text);
+  const status = currentStatus(text);
   let { body, followUps } = splitFollowUps(stripHalftime(text));
   if (!final) body = hidePartialFollowUpsLine(body);
   let html = md(body);
-  if (status) html += `<div class="otb-status" role="status">${escapeHtml(status)}</div>`;
+  if (status) html += statusHtml(status);
   if (final && followUps.length) html += followUpButtons(followUps);
   return html;
 }
 
 function stripHalftime(text) {
-  return text.replace(HALFTIME_LINE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text.replace(HALFTIME_LINES, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // Tell chat iframe to show/hide its Stop button
@@ -260,8 +267,8 @@ function sendToChatbot(userMessage) {
   };
   conversation.push({ role: 'user', content: userMessage });
 
-  // Start an empty bot message for streaming
-  postToHtml({ type: 'add-message', from: 'bot', html: '' });
+  // Start the bot message with the first stage's status
+  postToHtml({ type: 'add-message', from: 'bot', html: statusHtml(FIRST_STATUS) });
 
   abortCtrl = new AbortController();
 
@@ -331,15 +338,15 @@ function revealTick() {
   // Whole words only: run on to the next whitespace.
   const gap = text.slice(next).search(/\s/);
   next = gap === -1 ? text.length : next + gap;
-  // The status line appears in one go, never as a half-typed "## HALF...".
-  const halftime = text.match(HALFTIME_LINE);
-  if (halftime && next > halftime.index && shownChars < halftime.index + halftime[0].length) {
-    next = Math.max(next, halftime.index + halftime[0].length);
+  // Status lines appear in one go, never as a half-typed "## HALF...".
+  for (const status of text.matchAll(HALFTIME_LINES)) {
+    const end = status.index + status[0].length;
+    if (next > status.index && shownChars < end) next = Math.max(next, end);
   }
 
   shownChars = Math.min(next, text.length);
   const shown = text.slice(0, shownChars);
-  postToHtml({ type: 'update-bot-html', html: renderBot(shown), cursor: !phase2Status(shown) });
+  postToHtml({ type: 'update-bot-html', html: renderBot(shown), cursor: !currentStatus(shown) });
 }
 
 // One place that ends a response: normal end, read error, fetch error and Stop

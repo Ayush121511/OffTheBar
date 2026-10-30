@@ -127,28 +127,8 @@
     pointer-events: none;
   }
 
-  /* Typing dots shown until the first chunk arrives */
-  .typing {
-    display: flex;
-    gap: 5px;
-    align-items: center;
-    height: 24px;
-  }
-  .typing span {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #000;
-    animation: bounce 1.4s infinite ease-in-out both;
-  }
-  .typing span:nth-child(1) { animation-delay: -0.32s; }
-  .typing span:nth-child(2) { animation-delay: -0.16s; }
-  @keyframes bounce {
-    0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
-    40%           { transform: scale(1);   opacity: 1; }
-  }
-
-  /* Phase 2 status ("Checking the latest news") under the draft: a quiet
+  /* What the answer is waiting on ("Searching The Run of Play", "Searching
+     the web", "Generating"), under the draft if there is one: a quiet
      shimmer, like a "thinking" label */
   .otb-status {
     display: inline-block;
@@ -267,17 +247,19 @@
       return;
     }
 
-    // Bot message (begin) - empty html means "streaming starts": show typing dots
+    // Bot message (begin). The page code sends the first stage's status;
+    // empty html (an older page, or the fallback below) gets the same one.
     msg.appendChild(avatarImg(botAvatar));
 
     const content = el('div','content');
     content.innerHTML = html === ''
-      ? '<div class="typing"><span></span><span></span><span></span></div>'
+      ? '<div class="otb-status" role="status">Searching The Run of Play</div>'
       : html;
     msg.appendChild(content);
 
     log.appendChild(msg);
     lastWasBot = true;
+    syncStatusTimer();
 
     /* ✅ Auto-scroll ONLY when bot message begins (first bubble) */
     scrollToBottom(true);
@@ -304,10 +286,11 @@
     syncStatusTimer();
   }
 
-  // Live seconds on the Phase 2 status line, like a "thinking" timer. Nothing
-  // streams while Phase 2 loads, so the count runs here rather than in the page code.
+  // Live seconds on the status line, like a "thinking" timer. Nothing streams
+  // while a stage runs, so the count runs here rather than in the page code.
   let statusTimer = null;
   let statusStartedAt = 0;
+  let statusLabel = '';
 
   function formatElapsed(ms){
     const s = Math.floor(ms / 1000);
@@ -326,14 +309,21 @@
   }
 
   // Each re-render replaces the status element, so the start time lives here.
+  // A new stage ("Searching the web" -> "Generating") counts from 0 again.
   function syncStatusTimer(){
-    if (!log.querySelector('.otb-status')){
+    const status = log.querySelector('.otb-status');
+    if (!status){
       clearInterval(statusTimer);
       statusTimer = null;
       statusStartedAt = 0;
+      statusLabel = '';
       return;
     }
-    if (!statusStartedAt) statusStartedAt = Date.now();
+    const label = status.firstChild ? status.firstChild.textContent : '';
+    if (!statusStartedAt || label !== statusLabel){
+      statusStartedAt = Date.now();
+      statusLabel = label;
+    }
     tickStatus();
     if (!statusTimer) statusTimer = setInterval(tickStatus, 1000);
   }

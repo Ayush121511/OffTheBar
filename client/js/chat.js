@@ -32,11 +32,13 @@ const format = (text) => {
   return text.replace(/(?:\r\n|\r|\n)/g, "<br>");
 };
 
-// The backend streams "## HALFTIME!!! <status>" between its Phase 1 draft and
-// Phase 2 refinement. While Phase 2 loads, only the status shows, as a quiet
-// shimmer line under the draft with a live seconds counter; it goes away once
-// Phase 2 text arrives or the answer ends. Same as wix/offthebar-page.js.
-const HALFTIME_LINE = /^##\s*HALFTIME!!!\s*(.*)$/m;
+// The backend streams a "## HALFTIME!!! <status>" line at each stage
+// ("Searching The Run of Play", "Searching the web", "Generating"). Only the
+// latest status shows, as a quiet shimmer line (under the draft, if there is
+// one) with a live seconds counter; it goes away once text arrives or the
+// answer ends. Same as wix/offthebar-page.js.
+const HALFTIME_LINES = /^##\s*HALFTIME!!!\s*(.*)$/gm;
+const FIRST_STATUS = "Searching The Run of Play"; // shown before the first chunk arrives
 
 // Full answers end with an "Ask next:" list of follow-up prompts; once the
 // answer is done they show as buttons that send the question.
@@ -44,10 +46,13 @@ const FOLLOW_UPS_LINE = /^[ \t]*(?:\*\*|__)?Ask next:?(?:\*\*|__)?[ \t]*$/im;
 const FOLLOW_UP_ITEM = /^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/;
 
 const stripHalftime = (text) =>
-  text.replace(HALFTIME_LINE, "").replace(/\n{3,}/g, "\n\n").trim();
+  text.replace(HALFTIME_LINES, "").replace(/\n{3,}/g, "\n\n").trim();
 
 const escapeHtml = (text) =>
   text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c]);
+
+const statusHtml = (status) =>
+  `<div class="halftime-loading" role="status" aria-live="polite">${escapeHtml(status)}</div>`;
 
 const splitFollowUps = (text) => {
   const match = text.match(FOLLOW_UPS_LINE);
@@ -75,10 +80,10 @@ const renderAssistantText = (text, final = false) => {
   if (!final) body = hidePartialFollowUpsLine(body);
   let html = markdown.render(body);
 
-  const match = text.match(HALFTIME_LINE);
-  if (match && !text.slice(match.index + match[0].length).trim()) {
-    const status = match[1].trim() || "Checking the latest news";
-    html += `<div class="halftime-loading" role="status" aria-live="polite">${escapeHtml(status)}</div>`;
+  const statuses = [...text.matchAll(HALFTIME_LINES)];
+  const last = statuses[statuses.length - 1];
+  if (last && !text.slice(last.index + last[0].length).trim()) {
+    html += statusHtml(last[1].trim() || "Generating");
   }
   if (final && followUps.length) {
     const buttons = followUps
@@ -94,6 +99,7 @@ const renderAssistantText = (text, final = false) => {
 // lives here.
 let statusTimer = null;
 let statusStartedAt = 0;
+let statusLabel = "";
 
 const tickStatus = () => {
   const status = document.querySelector(".halftime-loading");
@@ -108,14 +114,21 @@ const tickStatus = () => {
   time.textContent = ` · ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}`;
 };
 
+// A new stage ("Searching the web" -> "Generating") counts from 0 again.
 const syncStatusTimer = () => {
-  if (!document.querySelector(".halftime-loading")) {
+  const status = document.querySelector(".halftime-loading");
+  if (!status) {
     clearInterval(statusTimer);
     statusTimer = null;
     statusStartedAt = 0;
+    statusLabel = "";
     return;
   }
-  if (!statusStartedAt) statusStartedAt = Date.now();
+  const label = status.firstChild ? status.firstChild.textContent : "";
+  if (!statusStartedAt || label !== statusLabel) {
+    statusStartedAt = Date.now();
+    statusLabel = label;
+  }
   tickStatus();
   if (!statusTimer) statusTimer = setInterval(tickStatus, 1000);
 };
@@ -198,10 +211,11 @@ const ask_gpt = async (message) => {
                     ${gpt_image} <i class="fa-regular fa-phone-arrow-down-left"></i>
                 </div>
                 <div class="content" id="gpt_${window.token}">
-                    <div id="cursor"></div>
+                    ${statusHtml(FIRST_STATUS)}
                 </div>
             </div>
         `;
+    syncStatusTimer();
 
     message_box.scrollTop = message_box.scrollHeight;
     window.scrollTo(0, 0);

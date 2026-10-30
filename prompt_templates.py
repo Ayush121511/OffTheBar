@@ -206,6 +206,27 @@ Excerpts:
 """.strip()
 
 
+def build_soccer_results_prompt(question: str, results: str) -> str:
+    return f"""
+A football (soccer) fan asked: "{question}"
+
+Below are numbered web search results (site, headline, snippet). Which ones are about association football - soccer?
+
+Keep a result only if its main subject is professional or international association football: clubs, players, managers, leagues, cups, national teams, transfers, women's football, and Fantasy Premier League or other soccer fantasy games.
+
+Drop everything else, however much it looks like "football":
+- American football: the NFL, college or high-school football, flag football, NFL fantasy football, DFS and betting picks (quarterbacks, tight ends, touchdowns, "Week 8", start/sit, waiver wire, NFL team names such as Chiefs, Eagles, Commanders).
+- Canadian football, Australian rules, Gaelic football, rugby, and every other sport.
+- School, college, youth and local amateur sport of any kind.
+When unsure, drop it.
+
+Reply with JSON only: {{"keep": [<numbers of the results to keep>]}}
+
+Results:
+{results}
+""".strip()
+
+
 def build_search_classifier_prompt(user_question: str, today: date) -> str:
     current_season = _season_label(today)
     previous_season = _season_label(today, offset=-1)

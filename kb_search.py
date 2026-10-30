@@ -118,6 +118,7 @@ class _Snapshot:
             for md in self.metadata
         ])
         self.position = {vid: i for i, vid in enumerate(self.ids)}
+        self.tags = {tag for md in self.metadata for tag in (md.get("tags") or [])}
         self.vocabulary = {}
         for term in self.bm25.idf:
             self.vocabulary.setdefault(term[0], []).append(term)
@@ -170,6 +171,13 @@ def _refresh():
     finally:
         with _snapshot_lock:
             _refreshing = False
+
+
+def known_tags():
+    """Every Wix tag on Run of Play's articles (clubs, players, competitions),
+    or an empty set until the keyword index has loaded."""
+    snapshot = _snapshot
+    return snapshot.tags if snapshot else set()
 
 
 def warm_up():

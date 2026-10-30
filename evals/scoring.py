@@ -13,8 +13,8 @@ from typing import Dict, Iterable, List, Optional
 
 # id, label, weight, what it measures
 SECTIONS = [
-    ("understanding", "Understanding", 15, "Search decision, search query, latest-news detection"),
-    ("retrieval", "Retrieval", 15, "Run of Play articles returned for the question"),
+    ("understanding", "Understanding", 15, "Search decision, search queries, latest-news detection"),
+    ("retrieval", "Retrieval", 15, "Run of Play articles returned; web results association football only"),
     ("routing", "Routing", 15, "Coverage verdict and the answer path it picks"),
     ("accuracy", "Answer accuracy", 20, "Expected facts present; stale or contradicting claims absent"),
     ("quality", "Answer quality", 15, "Rubric (flash-lite judge): answers the question, voice, clarity, consistency with the chat"),

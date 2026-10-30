@@ -13,7 +13,8 @@ Project `runofplay` (number `607277832880`), region `asia-south1`.
 | `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00002-p56`, 100% traffic, deployed 2026-09-21. Public (`allUsers` invoker). No `--max-instances` cap. |
 | `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | **Failing every run since 2026-10-08** - Hugging Face embeddings return `402 Payment Required`. Fixed in code (embeddings now computed locally, see CLAUDE.md); recovers once `offthebar-api` is redeployed and the job's image updated (step 4). |
 | `offthebar-ingest-kb-daily` (Cloud Scheduler) | triggers the job at `0 4 * * *` UTC | Enabled. |
-| `searxng-docker` (service) | web search backend | Live. |
+| `searxng-docker` (service) | web search backend | Live. Request-based billing (CPU only during requests), 1 vCPU / 512Mi, scales to zero. |
+| `searxng-keep-warm` (Cloud Scheduler) | `GET /robots.txt` on `searxng-docker` every 10 min | Enabled 2026-10-30 (step 5). |
 | `searx-proxy` | legacy Gen2 Cloud Function `searx_proxy` | Still ACTIVE, unused by this code. Candidate for deletion. |
 
 API URL: `https://offthebar-api-607277832880.asia-south1.run.app/api/chat`
@@ -188,6 +189,31 @@ into Pinecone.
 
 To trigger manually outside the daily schedule:
 `gcloud run jobs execute offthebar-ingest-kb --region asia-south1 --wait`
+
+### 5. Keep SearXNG warm
+
+`searxng-docker` scales to zero after ~15 idle minutes, and the next search
+then waits for a cold start: its request logs from 2026-10-29/30 show a median
+of 8.0s (worst 10.7s) for the 8 searches that came after 15+ idle minutes,
+against 0.34s for the other 127. With the site's light traffic, nearly every
+real user's web search was a cold one. A Cloud Scheduler ping every 10
+minutes keeps an instance up:
+
+```bash
+gcloud scheduler jobs create http searxng-keep-warm \
+  --project runofplay --location asia-south1 \
+  --schedule "*/10 * * * *" --time-zone "Etc/UTC" \
+  --uri "https://searxng-docker-607277832880.asia-south1.run.app/robots.txt" \
+  --http-method GET --attempt-deadline 30s
+```
+
+`/robots.txt` is a static 117-byte response (this SearXNG has no `/healthz`),
+so a ping never reaches Bing. Cost: $0. It's the billing account's second
+Cloud Scheduler job (3 are free; the account's other project has Scheduler
+disabled), and `searxng-docker` uses request-based billing, so an idle warm
+instance isn't charged - only the ~4,300 pings a month, a few milliseconds
+each, inside Cloud Run's free tier. Cloud Run doesn't promise to keep an idle
+instance, so a cold start can still happen now and then.
 
 ## Known limitation carried over from local dev
 

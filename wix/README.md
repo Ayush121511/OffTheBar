@@ -55,10 +55,14 @@ Gemini sends text in bursts of a few hundred characters, so the page reveals
 what has arrived a word at a time (every 40ms, faster the further behind it
 is) instead of showing each burst at once. Stop keeps only what was on screen.
 
-- `## HALFTIME!!! <status>` - the line between the Phase 1 draft and the Phase 2
-  update. While Phase 2 loads, only the status shows, as a grey shimmering
-  `.otb-status` line; the iframe adds a live seconds counter to it. It goes
-  away once Phase 2 text arrives or the answer ends.
+- `## HALFTIME!!! <status>` - a status line the backend streams at each stage:
+  `Searching The Run of Play` first, `Searching the web` while it waits for the
+  web search, and `Generating` until the first words of an answer (or of the
+  update after a draft). Only the latest status shows, while nothing follows
+  it, as a grey shimmering `.otb-status` line with a live seconds counter
+  (added by the iframe); every status line is stripped from the answer text.
+  The page shows `Searching The Run of Play` itself as soon as a message is
+  sent, so there's no blank wait before the first chunk.
 - `Ask next:` followed by a list - the follow-up prompts every full answer ends
   with (`prompt_templates.FOLLOW_UP_FORMAT`). They're cut from the text and,
   once the answer is done, shown as `.otb-suggestion` buttons. Only the latest
@@ -71,10 +75,10 @@ is) instead of showing each burst at once. Stop keeps only what was on screen.
 2. `chatHtml`: select the embed, **Edit Code**, and replace the code with
    `chat-iframe.html`.
 3. `inputHtml`: same, with `input-iframe.html`.
-4. In Wix's Preview, try a quick question, a news question (a grey
-   shimmering "Checking the latest news" line should appear under the draft
-   with a seconds counter, and disappear when the update arrives or the answer
-   ends), a follow-up suggestion button (it should send as the next question), Stop in
+4. In Wix's Preview, try a quick question (a grey shimmering "Searching The
+   Run of Play" line with a seconds counter, then "Generating", then the
+   answer), a news question ("Searching the web" and "Generating" under the
+   draft, gone once the update arrives or the answer ends), a follow-up suggestion button (it should send as the next question), Stop in
    the middle of an answer (the partial answer should stay), and a `?msg=`
    link. Then publish.
 
@@ -91,7 +95,7 @@ Page code → `chatHtml`:
 | `ping` | | Asks the iframe to send `iframe-ready` again |
 | `set-theme-vars` | `vars` | Sets CSS custom properties on `:root` |
 | `set-avatars` | `user`, `bot` | Avatar image URLs for messages added after this |
-| `add-message` | `from` (`user`/`bot`), `html` | Appends a message; a bot message with empty `html` shows typing dots |
+| `add-message` | `from` (`user`/`bot`), `html` | Appends a message; a bot message with empty `html` shows the "Searching The Run of Play" status |
 | `update-bot-html` | `html`, `cursor` | Replaces the current bot message while it streams |
 | `finalize-bot` | `html` | Final render of the current bot message (empty `html` is ignored) |
 | `set-stop-visible` | `visible` | Shows/hides the Stop button |

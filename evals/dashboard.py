@@ -16,6 +16,10 @@ import scoring  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
+# Rupees per US dollar for the INR cost figures (~95 in late October 2026).
+# Update it when the rupee moves.
+USD_TO_INR = 95
+
 
 # Column headers in the cases table, where the full labels don't fit.
 SHORT_LABELS = {"understanding": "Underst.", "retrieval": "Retrieval", "routing": "Routing", "accuracy": "Accuracy",
@@ -60,6 +64,7 @@ def build(reports_dir: Path = REPO / "evals" / "reports", cases_path: Path = REP
         "sections": [{"id": s[0], "label": s[1], "short": SHORT_LABELS[s[0]], "weight": s[2], "about": s[3]}
                      for s in scoring.SECTIONS],
         "domains": spec["domains"],
+        "usd_to_inr": USD_TO_INR,
         "runs": runs,
     }
     page = reports_dir / "dashboard.html"
@@ -108,19 +113,21 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
 select, button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border);
                  border-radius: 8px; padding: 6px 10px; }
+select { max-width: 100%; }
 button { cursor: pointer; }
 button:hover, select:hover { border-color: var(--axis); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 12px; }
 .card-head .sub { font-size: 12px; }
 .grid { display: grid; gap: 16px; }
-.top { grid-template-columns: minmax(220px, 1.1fr) repeat(4, minmax(140px, 1fr)); }
+.top { grid-template-columns: minmax(200px, 1.1fr) repeat(5, minmax(130px, 1fr)); }
 .two { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1100px) { .top { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 900px) { .top { grid-template-columns: 1fr 1fr; } .two { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .top { grid-template-columns: 1fr; } }
 .hero-value { font-size: 56px; font-weight: 650; line-height: 1; margin: 6px 0 8px; }
 .tile-label { color: var(--ink-2); font-size: 13px; }
-.tile-value { font-size: 28px; font-weight: 600; margin-top: 6px; }
+.tile-value { font-size: 28px; font-weight: 600; margin-top: 6px; white-space: nowrap; }
 .delta-up { color: var(--good-text); } .delta-down { color: var(--critical); }
 .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .bars .row { display: grid; grid-template-columns: 140px 1fr 60px; align-items: center; gap: 10px; padding: 5px 0; }
@@ -186,6 +193,8 @@ pre.answer { white-space: pre-wrap; font: inherit; margin: 0; max-height: 320px;
     <div class="card"><div class="tile-label">Cases passed</div><div class="tile-value" id="cases">-</div><div class="note" id="casesNote"></div></div>
     <div class="card"><div class="tile-label">Checks passed</div><div class="tile-value" id="checks">-</div><div class="note" id="checksNote"></div></div>
     <div class="card"><div class="tile-label">Run cost</div><div class="tile-value" id="cost">-</div><div class="note" id="costNote"></div></div>
+    <div class="card" title="Each eval answer also pays for 3 flash-lite calls a real chat doesn't make (the routing checks and the rubric judge), so a real question costs slightly less.">
+      <div class="tile-label">Cost per question</div><div class="tile-value" id="perQuestion">-</div><div class="note" id="perQuestionNote"></div></div>
     <div class="card"><div class="tile-label">Median time to first words</div><div class="tile-value" id="latency">-</div><div class="note" id="latencyNote"></div></div>
   </div>
 
@@ -211,7 +220,7 @@ pre.answer { white-space: pre-wrap; font: inherit; margin: 0; max-height: 320px;
 
   <div class="card" style="margin-top:16px">
     <div class="card-head"><h2>Failed checks</h2><span class="sub" id="failCount"></span></div>
-    <table class="data" id="failures"></table>
+    <div style="overflow-x:auto"><table class="data" id="failures"></table></div>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -238,6 +247,10 @@ const el = (tag, props = {}, ...kids) => {
 };
 const pct = (v) => v == null ? '-' : (v * 100).toFixed(1);
 const fmtDate = (s) => s ? s.replace('T', ' ').slice(0, 16) : '';
+const inr = (usd) => '₹' + (usd * DATA.usd_to_inr).toFixed(2);
+const usd = (v) => '$' + v.toFixed(4);
+const median = (sorted) => sorted.length % 2 ? sorted[(sorted.length - 1) / 2]
+  : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
 const isDark = () => document.documentElement.dataset.theme === 'dark' ||
   (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -300,7 +313,9 @@ function renderTiles({ run, dom, scores, cases }) {
   const prevScore = prev && (dom ? prev.scores.domains[dom]?.overall : prev.scores.all.overall);
   const delta = $('overallDelta');
   delta.className = 'sub'; delta.textContent = '';
-  if (prevScore != null && scores.overall != null) {
+  if (run.filtered) {
+    delta.textContent = 'Partial rerun - not compared';
+  } else if (prevScore != null && scores.overall != null) {
     const d = (scores.overall - prevScore) * 100;
     delta.className = 'sub ' + (d > 0.05 ? 'delta-up' : d < -0.05 ? 'delta-down' : '');
     delta.textContent = `${d >= 0 ? '+' : ''}${d.toFixed(1)} vs previous ${run.answers ? 'answer' : 'routing'} run`;
@@ -312,11 +327,19 @@ function renderTiles({ run, dom, scores, cases }) {
   $('checks').textContent = `${scores.checks_passed} / ${scores.checks}`;
   $('checksNote').textContent = dom ? `in ${dom}` : 'all sections';
   const cost = dom ? cases.reduce((a, c) => a + (c.cost || 0), 0) : run.cost;
-  $('cost').textContent = '$' + cost.toFixed(4);
-  $('costNote').textContent = dom ? 'cases in this domain' : `${run.calls} Gemini calls · ${run.free} free key, ${run.paid} paid`;
+  $('cost').textContent = inr(cost);
+  $('costNote').textContent = `${usd(cost)} at ₹${DATA.usd_to_inr}/$ · ` +
+    (dom ? 'cases in this domain' : `${run.calls} Gemini calls · ${run.free} free key, ${run.paid} paid`);
+  // Per question: the answered cases when there are any, else the routing checks alone.
+  const answered = cases.filter(c => c.info?.answer);
+  const costs = (answered.length ? answered : cases).map(c => c.cost || 0).sort((a, b) => a - b);
+  $('perQuestion').textContent = costs.length ? inr(median(costs)) : '-';
+  $('perQuestionNote').textContent = !costs.length ? ''
+    : `median of ${costs.length} ${answered.length ? 'answered questions' : 'routing checks, no answers'} · ${inr(costs[0])}-${inr(costs[costs.length - 1])}`;
   const times = cases.map(c => c.info?.answer?.first_words_s).filter(v => v != null).sort((a, b) => a - b);
-  $('latency').textContent = times.length ? times[Math.floor(times.length / 2)].toFixed(1) + 's' : '-';
-  $('latencyNote').textContent = times.length ? `${times.length} answers · ${times[0].toFixed(1)}-${times[times.length - 1].toFixed(1)}s` : 'run with --answers';
+  $('latency').textContent = times.length ? median(times).toFixed(1) + 's' : '-';
+  $('latencyNote').textContent = times.length
+    ? `${times.length} of ${cases.length} questions answered · ${times[0].toFixed(1)}-${times[times.length - 1].toFixed(1)}s` : 'run with --answers';
 }
 
 // ---- section bars ----
@@ -343,9 +366,10 @@ function renderSections({ scores }) {
 }
 
 // ---- trend ----
-function renderTrend() {
+function renderTrend({ dom }) {
   const box = $('trend'); box.replaceChildren();
-  const pts = runs.map((r, i) => ({ r, i, v: r.scores.all.overall })).filter(p => !p.r.filtered && p.v != null);
+  const pts = runs.map((r, i) => ({ r, i, v: dom ? r.scores.domains[dom]?.overall : r.scores.all.overall }))
+    .filter(p => !p.r.filtered && p.v != null);
   const table = $('trendTable');
   table.replaceChildren(el('tr', {}, el('th', {}, 'Run'), el('th', {}, 'Kind'), el('th', {}, 'Cases'), el('th', {}, 'Score')));
   pts.forEach(p => table.append(el('tr', {}, el('td', {}, fmtDate(p.r.ran_at)), el('td', {}, p.r.answers ? 'with answers' : 'routing only'),
@@ -356,7 +380,7 @@ function renderTrend() {
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('width', W); svg.setAttribute('height', H); svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', 'Overall score per run');
+  svg.setAttribute('aria-label', `${dom || 'Overall'} score per run`);
   const s = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); svg.append(n); return n; };
   const lo = Math.max(0, Math.floor(Math.min(...pts.map(p => p.v)) * 10) / 10 - 0.1);
   const x = (k) => m.l + (pts.length === 1 ? (W - m.l - m.r) / 2 : k * (W - m.l - m.r) / (pts.length - 1));
@@ -459,6 +483,10 @@ function caseDetail(c) {
   add('Search', c.info?.search_required == null ? '-' : `${c.info.search_required ? 'yes' : 'no'}${c.info.latest_news ? ' · latest news' : ''}`);
   add('Search query', c.info?.query || '(none)');
   add('Run of Play', (c.info?.titles || []).join('  ·  ') || '(none)');
+  if (c.info?.web_query != null) {
+    add('Web query', c.info.web_query || '(none)');
+    add('Web results', (c.info.web_titles || []).join('  ·  ') || '(none)');
+  }
   const a = c.info?.answer;
   if (a) {
     add('Answer', el('pre', { class: 'answer' }, a.answer || ''));
@@ -468,13 +496,13 @@ function caseDetail(c) {
   add('Checks', el('div', {}, ...c.checks.map(k => el('div', {},
     el('span', { class: 'status ' + (k.ok ? 'pass' : 'fail') }, k.ok ? '✓' : '✕'), ` ${k.section} / ${k.check}`,
     k.detail ? el('span', { style: 'color:var(--muted)' }, ` - ${k.detail}`) : ''))));
-  add('Cost', '$' + (c.cost || 0).toFixed(4));
+  add('Cost', `${inr(c.cost || 0)} (${usd(c.cost || 0)})`);
   return g;
 }
 
 function render() {
   const view = current();
-  renderTiles(view); renderSections(view); renderHeat(view); renderFailures(view); renderCases(view);
+  renderTiles(view); renderSections(view); renderTrend(view); renderHeat(view); renderFailures(view); renderCases(view);
 }
 
 document.querySelectorAll('button[data-table]').forEach(b => b.addEventListener('click', () => {
@@ -485,13 +513,13 @@ document.querySelectorAll('button[data-table]').forEach(b => b.addEventListener(
 }));
 $('theme').addEventListener('click', () => {
   document.documentElement.dataset.theme = isDark() ? 'light' : 'dark';
-  render(); renderTrend();
+  render();
 });
 runSel.addEventListener('change', render);
 domSel.addEventListener('change', render);
-addEventListener('resize', () => renderTrend());
+addEventListener('resize', () => renderTrend(current()));
 if (!runs.length) document.querySelector('.wrap').append(el('div', { class: 'empty-state' }, 'No reports yet - run python evals/run_evals.py'));
-else { render(); renderTrend(); }
+else render();
 </script>
 </body>
 </html>
