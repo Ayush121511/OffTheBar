@@ -225,6 +225,7 @@ def answer_case(case):
     payload = {
         "jailbreak": True,
         "conversation_id": "eval-run",
+        "stage_statuses": True,
         "meta": {"content": {"conversation": case.get("history", []), "parts": [{"content": case["question"]}]}},
     }
     log, raw = io.StringIO(), ""

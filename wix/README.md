@@ -26,9 +26,15 @@ checked without pasting into Wix:
 
 ```bash
 cd wix
-python3 -m http.server 8000
+python3 preview/serve.py
 # then open http://localhost:8000/preview/
 ```
+
+`serve.py` is `python3 -m http.server` with browser caching turned off, and
+the preview loads the page code and both embeds under a new `?v=` URL every
+time. Under the plain server, reloads kept running a cached, older
+`offthebar-page.js` and `chat-iframe.html` (typing dots, a "HALFTIME!!!"
+heading) against a newer backend.
 
 Pick the backend from the toolbar:
 
@@ -62,7 +68,12 @@ is) instead of showing each burst at once. Stop keeps only what was on screen.
   it, as a grey shimmering `.otb-status` line with a live seconds counter
   (added by the iframe); every status line is stripped from the answer text.
   The page shows `Searching The Run of Play` itself as soon as a message is
-  sent, so there's no blank wait before the first chunk.
+  sent, so there's no blank wait before the first chunk. The page asks for
+  these with `stage_statuses: true` in the request; without it (an older page
+  or a tab opened before a publish) the backend sends only the one status line
+  older pages handle - before the web update or the combined answer - so
+  publishing the page code and redeploying the backend don't have to happen
+  at the same moment.
 - `Ask next:` followed by a list - the follow-up prompts every full answer ends
   with (`prompt_templates.FOLLOW_UP_FORMAT`). They're cut from the text and,
   once the answer is done, shown as `.otb-suggestion` buttons. Only the latest

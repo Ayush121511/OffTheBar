@@ -240,6 +240,16 @@ class Backend_Api:
 
             jailbreak = payload["jailbreak"]
             conversation_id = payload.get("conversation_id")
+            # Clients that show a status per stage say so. Older ones - the
+            # live Wix page until the new code is published, or a tab opened
+            # before that - strip only one status line and render any other as
+            # a "HALFTIME!!! ..." heading, so they get just the one line they
+            # were built for: before the web update or the combined answer.
+            stage_statuses = bool(payload.get("stage_statuses"))
+
+            def stage_status(text: str) -> List[bytes]:
+                return [_status(text)] if stage_statuses else []
+
             conversation_history = payload["meta"]["content"]["conversation"]
             prompt = payload["meta"]["content"]["parts"][0]
 
@@ -467,7 +477,7 @@ class Backend_Api:
                     yields the web status while the search is still running."""
                     try:
                         print("Fetching latest news content...")
-                        if not (web_prefetch and web_prefetch[0].done()):
+                        if not stage_statuses or not (web_prefetch and web_prefetch[0].done()):
                             yield _status(STATUS_WEB)
                         if web_prefetch:
                             latest, _, _ = web_prefetch[0].result()
@@ -486,7 +496,7 @@ class Backend_Api:
                     # No draft: one answer from Run of Play's articles and the web together.
                     latest = yield from fetch_latest_context()
                     combined = "\n\n".join(part for part in (news_content, latest) if part)
-                    yield _status(STATUS_GENERATING)
+                    yield from stage_status(STATUS_GENERATING)
                     yield from stream_gemini_flash_fast(
                         contents_with(build_complete_context_instruction(), combined),
                         error_messages,
@@ -497,7 +507,7 @@ class Backend_Api:
                     yield from combined_answer()
                     return
 
-                yield _status(STATUS_GENERATING)
+                yield from stage_status(STATUS_GENERATING)
                 try:
                     response = call_gemini_with_key_retry(
                         "gemini-2.5-flash", _call_phase1, streaming=True
@@ -528,7 +538,7 @@ class Backend_Api:
 
                 # Phase 2: Attempt to fetch updated context via ask_from_llm
                 news_content_latest = yield from fetch_latest_context()
-                yield _status(STATUS_GENERATING)
+                yield from stage_status(STATUS_GENERATING)
 
                 # If updated context exists, continue streaming a refined answer
                 if news_content_latest:
@@ -578,7 +588,7 @@ class Backend_Api:
                 for each stage."""
                 nonlocal news_content, search_required, formatted_query, kb_coverage
                 try:
-                    yield _status(STATUS_RUN_OF_PLAY)
+                    yield from stage_status(STATUS_RUN_OF_PLAY)
                     news_content, search_required, formatted_query = ask_from_llm(
                         "", llm_query, on_search_planned=start_web_search
                     )
@@ -594,7 +604,7 @@ class Backend_Api:
                     # === Fast path: no search needed, or the articles cover it (complete context) ===
                     if not search_required or kb_coverage == "full":
                         print("Streaming response from Gemini AI (complete context)...")
-                        yield _status(STATUS_GENERATING)
+                        yield from stage_status(STATUS_GENERATING)
                         yield from stream_gemini_flash_fast(
                             contents_with(build_complete_context_instruction()),
                             error_messages,

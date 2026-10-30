@@ -160,8 +160,10 @@
 })();
 </script>
 
-<!-- The page code itself, unmodified -->
-<script type="module" src="../offthebar-page.js"></script>
+<!-- The page code itself, unmodified. It and the two embeds load under a new
+     URL every time, so the browser never runs a cached older copy against a
+     newer backend (an old chat-iframe.html kept showing typing dots). -->
+<script type="module">import(`../offthebar-page.js?v=${Date.now()}`);</script>
 </head>
 <body>
   <div class="toolbar">
@@ -176,11 +178,14 @@
 
   <div class="page">
     <div id="titleStack">Off The Bar <small>(click = new chat, like the Wix title)</small></div>
-    <iframe id="chatHtml" src="../chat-iframe.html"></iframe>
+    <iframe id="chatHtml" data-src="../chat-iframe.html"></iframe>
     <div class="inputRow">
-      <iframe id="inputHtml" src="../input-iframe.html"></iframe>
+      <iframe id="inputHtml" data-src="../input-iframe.html"></iframe>
       <button id="sendBtn">➤ Send</button>
     </div>
+    <script>
+      document.querySelectorAll('iframe[data-src]').forEach((f) => { f.src = `${f.dataset.src}?v=${Date.now()}`; });
+    </script>
     <details>
       <summary>Last /api/chat request body</summary>
       <pre id="lastRequest">(nothing sent yet)</pre>

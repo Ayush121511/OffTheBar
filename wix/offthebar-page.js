@@ -258,6 +258,7 @@ function sendToChatbot(userMessage) {
   const payload = {
     jailbreak: true,                 // required key on the backend, value unused
     conversation_id: conversationId, // groups this chat's turns in the server-side logs
+    stage_statuses: true,            // a status line per stage (see HALFTIME_LINES)
     meta: {
       content: {
         conversation: conversation.map(m => ({ role: m.role, content: m.content })),

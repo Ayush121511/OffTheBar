@@ -231,6 +231,7 @@ const ask_gpt = async (message) => {
       },
       body: JSON.stringify({
         conversation_id: window.conversation_id,
+        stage_statuses: true, // a status line per stage (see HALFTIME_LINES)
         action: `_ask`,
         model: model.options[model.selectedIndex].value,
         jailbreak: jailbreak.options[jailbreak.selectedIndex].value,
