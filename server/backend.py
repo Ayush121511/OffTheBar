@@ -28,6 +28,7 @@ from ragwithsearch import ask_from_llm, error_messages
 # text arrives or the answer ends. The "## HALFTIME!!!" prefix is the marker
 # they look for - keep it, or older embeds show the raw line.
 HALFTIME_MARKER = "## HALFTIME!!! "
+NO_NEW_UPDATES = "NO_NEW_UPDATES"   # Phase 2's "nothing to add" reply (prompt_templates.build_refinement_prompt)
 HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
 # Phase 1 is a ~60-word draft, so Gemini 2.5 Flash's default thinking mostly
 # adds cost (billed as output) and delays the first visible word: measured 676
@@ -78,6 +79,35 @@ def _build_llm_query(conversation_history: List[Dict[str, str]], latest_question
         f"Previous Query:{prior_user_queries}"
         f"\nMain query to be answered:{latest_question}"
     )
+
+
+def _without_no_new_updates(pieces: Iterable[str]) -> Iterable[str]:
+    """
+    Pass Phase 2's streamed text through as it arrives, holding back only the
+    start until it can't be the NO_NEW_UPDATES sentinel, which must never
+    reach the user. (Phase 2 used to be collected whole and sent in one piece
+    for this check, so the update appeared all at once.)
+    """
+    pending: Optional[str] = ""
+    for piece in pieces:
+        if pending is None:
+            yield piece
+            continue
+        pending += piece
+        head = pending.lstrip()
+        if NO_NEW_UPDATES.startswith(head) or head.startswith(NO_NEW_UPDATES):
+            continue
+        yield pending
+        pending = None
+
+    if pending is not None:
+        rest = pending.strip()
+        if rest.startswith(NO_NEW_UPDATES):
+            rest = rest[len(NO_NEW_UPDATES):].strip()
+        if rest:
+            yield rest
+        else:
+            print("Phase 2 had no new updates (or no text); nothing to add.")
 
 
 def _to_gemini_role(role: str) -> str:
@@ -335,25 +365,17 @@ class Backend_Api:
                         _call_phase2,
                         streaming=True,
                     )
-                    response_text_parts: List[str] = []
-                    for chunk in response:
-                        finish_reason = _extract_finish_reason(chunk)
-                        if finish_reason:
-                            print(f"Gemini finish reason (phase-2): {finish_reason}")
-                        chunk_text = _extract_text(chunk)
-                        if not chunk_text:
-                            continue
-                        response_text_parts.append(chunk_text)
+                    def texts() -> Iterable[str]:
+                        for chunk in response:
+                            finish_reason = _extract_finish_reason(chunk)
+                            if finish_reason:
+                                print(f"Gemini finish reason (phase-2): {finish_reason}")
+                            chunk_text = _extract_text(chunk)
+                            if chunk_text:
+                                yield chunk_text
 
-                    response_text = "".join(response_text_parts).strip()
-                    if not response_text:
-                        print("Phase 2 returned no text.")
-                        return
-                    if response_text == "NO_NEW_UPDATES":
-                        print("Phase 2 had no new updates; suppressing sentinel from output.")
-                        return
-
-                    yield response_text.encode("utf-8")
+                    for piece in _without_no_new_updates(texts()):
+                        yield piece.encode("utf-8")
 
                 except Exception as exc:
                     print(f"Error during Gemini API call: {exc}")

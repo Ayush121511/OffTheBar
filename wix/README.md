@@ -50,7 +50,10 @@ manager). So still do one pass in Wix's Preview before publishing.
 ## Answer rendering
 
 The page code renders each answer from the backend's markdown stream, with two
-pieces of it handled specially (the iframe only sees the resulting HTML):
+pieces of it handled specially (the iframe only sees the resulting HTML).
+Gemini sends text in bursts of a few hundred characters, so the page reveals
+what has arrived a word at a time (every 40ms, faster the further behind it
+is) instead of showing each burst at once. Stop keeps only what was on screen.
 
 - `## HALFTIME!!! <status>` - the line between the Phase 1 draft and the Phase 2
   update. While Phase 2 loads, only the status shows, as a grey shimmering

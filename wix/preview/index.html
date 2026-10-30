@@ -124,12 +124,15 @@
     const phase2 = '### Mock update\nPhase 2 lands like a late winner. Raw HTML should show as text: ' +
       '<b>not bold</b>.\n\nAsk next:\n- What else happened?\n- Who starts "next" week & why?';
 
+    // Bursts of ~80 characters, like Gemini's real stream, so the page's
+    // word-by-word reveal is what makes it look smooth.
+    const bursts = (text) => text.match(/[\s\S]{1,80}(\s|$)/g) || [];
     const script = [];
-    phase1.split(' ').forEach((w) => script.push([60, w + ' ']));
+    bursts(phase1).forEach((b) => script.push([150, b]));
     script.push([60, '\n\n## HALFTIME!!! Checking the latest news\n\n']);
     script.push([2500, '']);   // Phase 2 retrieval time
     if (!/mock-nothing-new/i.test(question)) {
-      phase2.split(' ').forEach((w) => script.push([40, w + ' ']));
+      bursts(phase2).forEach((b) => script.push([150, b]));
     }
 
     let timers = [];

@@ -36,6 +36,18 @@ let currentReader = null;       // ReadableStream reader
 let lastStreamText = '';        // accumulated text so far
 let requestId = 0;              // bumped on Stop, so callbacks from a stopped stream bail out
 
+// ------- Smooth reveal -------
+// Gemini streams in bursts of a few hundred characters (about four per answer
+// phase, within half a second), so received text is revealed at a steady pace,
+// a word at a time, catching up faster the further behind it is - instead of
+// jumping in paragraph-sized blocks.
+const REVEAL_TICK_MS = 40;
+const REVEAL_MIN_CHARS = 3;      // per tick, when nearly caught up
+const REVEAL_CATCH_UP = 8;       // per tick, reveal at least 1/8 of the backlog
+let shownChars = 0;             // how much of the normalized stream text is on screen
+let revealTimer = null;
+let streamDone = false;         // the response has fully arrived; finish once revealed
+
 // ------- Chat iframe handshake -------
 // Messages posted before the chat iframe has loaded can be lost, so they're
 // queued until it reports 'iframe-ready'.
@@ -231,6 +243,8 @@ function sendToChatbot(userMessage) {
 
   streaming = true;
   lastStreamText = '';
+  shownChars = 0;
+  streamDone = false;
 
   // Same shape as client/js/chat.js: prior turns in `conversation`, the new
   // message only in `parts` (the backend adds it to the prompt itself).
@@ -271,13 +285,13 @@ function sendToChatbot(userMessage) {
 
           if (done) {
             lastStreamText += decoder.decode();   // flush a trailing multi-byte character
-            finishBot('*No answer came back - please try again.*');
+            streamDone = true;                    // revealTick finishes once it's all shown
+            startReveal();
             return;
           }
 
           lastStreamText += decoder.decode(value, { stream: true });
-          const text = normalizeEscapes(lastStreamText);
-          postToHtml({ type: 'update-bot-html', html: renderBot(text), cursor: !phase2Status(text) });
+          startReveal();
           pump();
         }).catch(err => {
           if (!isCurrent()) return;
@@ -295,9 +309,43 @@ function sendToChatbot(userMessage) {
     });
 }
 
+function startReveal() {
+  if (!revealTimer) revealTimer = setInterval(revealTick, REVEAL_TICK_MS);
+}
+
+function stopReveal() {
+  clearInterval(revealTimer);
+  revealTimer = null;
+}
+
+function revealTick() {
+  const text = normalizeEscapes(lastStreamText);
+  if (shownChars >= text.length) {
+    if (streamDone) finishBot('*No answer came back - please try again.*');
+    else stopReveal();   // caught up - the next chunk restarts it
+    return;
+  }
+
+  const backlog = text.length - shownChars;
+  let next = shownChars + Math.max(REVEAL_MIN_CHARS, Math.ceil(backlog / REVEAL_CATCH_UP));
+  // Whole words only: run on to the next whitespace.
+  const gap = text.slice(next).search(/\s/);
+  next = gap === -1 ? text.length : next + gap;
+  // The status line appears in one go, never as a half-typed "## HALF...".
+  const halftime = text.match(HALFTIME_LINE);
+  if (halftime && next > halftime.index && shownChars < halftime.index + halftime[0].length) {
+    next = Math.max(next, halftime.index + halftime[0].length);
+  }
+
+  shownChars = Math.min(next, text.length);
+  const shown = text.slice(0, shownChars);
+  postToHtml({ type: 'update-bot-html', html: renderBot(shown), cursor: !phase2Status(shown) });
+}
+
 // One place that ends a response: normal end, read error, fetch error and Stop
 // (which passes showFollowUps=false - a stopped answer's list may be cut off).
 function finishBot(fallbackMarkdown, showFollowUps = true) {
+  stopReveal();
   const finalText = stripHalftime(normalizeEscapes(lastStreamText));
   const html = finalText ? renderBot(finalText, showFollowUps) : md(fallbackMarkdown);
   postToHtml({ type: 'finalize-bot', html });
@@ -318,5 +366,7 @@ function stopStreaming() {
   if (currentReader) currentReader.cancel('user-stopped').catch(() => {});
   try { if (abortCtrl) abortCtrl.abort(); } catch (_) {}
 
+  // Keep what was on screen - text that arrived but wasn't revealed yet is dropped.
+  lastStreamText = normalizeEscapes(lastStreamText).slice(0, shownChars);
   finishBot('*Generation stopped.*', false);
 }
