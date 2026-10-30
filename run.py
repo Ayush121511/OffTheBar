@@ -66,10 +66,11 @@ for route in backend_api.routes:
         methods   = backend_api.routes[route]['methods'],
     )
 
-# Load Run of Play's keyword index in the background so the first question
-# doesn't wait for it (skipped in the auto-reloader's watcher process).
+# Load Run of Play's keyword index and the embedding model, and connect to
+# Pinecone, in the background so the first question doesn't wait for them
+# (skipped in the auto-reloader's watcher process).
 if not site_config.get('debug') or os.getenv("WERKZEUG_RUN_MAIN") == "true":
-    kb_search.warm_up()
+    kb_search.start_up()
 
 if __name__ == '__main__':
     print(f"Running on port {site_config['port']}")

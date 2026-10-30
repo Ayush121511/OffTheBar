@@ -56,7 +56,7 @@ SNAPSHOT_CACHE = Path(os.getenv("KB_SNAPSHOT_CACHE") or Path(__file__).resolve()
 # Keyword-only candidates whose vectors are fetched for their real similarity
 # (the best by BM25); the rest rank at the lowest dense score.
 KEYWORD_ONLY_FETCH = 10
-PINECONE_DEADLINE_SECONDS = 4
+PINECONE_DEADLINE_SECONDS = 2
 PINECONE_QUOTA_PAUSE_SECONDS = 60 * 60
 PINECONE_SLOW_PAUSE_SECONDS = 60
 
@@ -241,6 +241,23 @@ def known_tags():
     or an empty set until the keyword index has loaded."""
     snapshot = _snapshot
     return snapshot.tags if snapshot else set()
+
+
+def _connect():
+    """Load the embedding model and open the Pinecone connection, which the
+    first question otherwise waited for (~0.3s for Pinecone alone)."""
+    try:
+        embed_texts(["warm up"])
+        get_pinecone_index()
+    except Exception as exc:
+        print(f"[OffTheBar kb] warm-up failed: {exc}")
+
+
+def start_up():
+    """At startup, in the background: the keyword index, the embedding model
+    and the Pinecone connection."""
+    warm_up()
+    threading.Thread(target=_connect, name="kb-connect", daemon=True).start()
 
 
 def warm_up():
