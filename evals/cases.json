@@ -1,0 +1,321 @@
+{
+  "as_of": "2026-10-30",
+  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question.",
+  "cases": [
+    {
+      "id": "messi-farewell-score",
+      "question": "What was the score in Messi's farewell match for Argentina?",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "kb_title_any": [
+          "last dance"
+        ],
+        "coverage_in": [
+          "full",
+          "partial"
+        ],
+        "path_in": [
+          "single",
+          "draft_update"
+        ],
+        "answer_contains_all": [
+          "3-0",
+          "Benin"
+        ]
+      }
+    },
+    {
+      "id": "messi-farewell-typo",
+      "question": "mesi farewel match benin score",
+      "expect": {
+        "kb_title_any": [
+          "last dance"
+        ]
+      }
+    },
+    {
+      "id": "messi-farewell-followup",
+      "question": "What was the score?",
+      "history": [
+        {
+          "role": "user",
+          "content": "Did Messi play a farewell match for Argentina?"
+        },
+        {
+          "role": "model",
+          "content": "He did - on October 6, 2026 Messi played his farewell friendly for Argentina against Benin in Buenos Aires, and even scored a penalty."
+        }
+      ],
+      "answer": true,
+      "expect": {
+        "kb_title_any": [
+          "last dance"
+        ],
+        "answer_contains_all": [
+          "3-0"
+        ],
+        "answer_excludes": [
+          "no farewell",
+          "world cup final was his last",
+          "whisper in the wind"
+        ],
+        "query_includes": [
+          "Messi"
+        ]
+      },
+      "notes": "Pronoun follow-up: the classifier has to resolve 'the score' to Messi's farewell match, and the answer must not contradict the earlier turn."
+    },
+    {
+      "id": "messi-recent",
+      "question": "messi recent performance",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "kb_title_any": [
+          "last dance",
+          "farewell"
+        ]
+      }
+    },
+    {
+      "id": "fleetwood-arsenal",
+      "question": "How did Fleetwood knock Arsenal out of the Carabao Cup?",
+      "answer": true,
+      "expect": {
+        "kb_title_any": [
+          "Fleetwood"
+        ],
+        "coverage_in": [
+          "full",
+          "partial"
+        ],
+        "answer_contains_all": [
+          "Fleetwood"
+        ],
+        "answer_contains_any": [
+          "penalt",
+          "shootout"
+        ],
+        "query_includes": [
+          "Fleetwood"
+        ],
+        "query_excludes": [
+          "2023",
+          "2024",
+          "2025-26"
+        ]
+      }
+    },
+    {
+      "id": "arsenal-latest",
+      "question": "latest Arsenal news",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "kb_title_any": [
+          "Fleetwood",
+          "Arsenal"
+        ],
+        "coverage_in": [
+          "partial",
+          "full"
+        ],
+        "path_in": [
+          "draft_update",
+          "single"
+        ]
+      }
+    },
+    {
+      "id": "carrick-united",
+      "question": "How is Manchester United doing under Carrick?",
+      "expect": {
+        "latest_news": true,
+        "kb_title_any": [
+          "Carrick"
+        ],
+        "coverage_in": [
+          "full",
+          "partial"
+        ],
+        "query_includes": [
+          "Carrick"
+        ],
+        "query_excludes": [
+          "ten Hag",
+          "Amorim"
+        ]
+      },
+      "notes": "Run of Play had 2- and 6-day-old Carrick crisis pieces; the classifier's rewrite once dropped 'Carrick', so the archive is also searched with the user's own words."
+    },
+    {
+      "id": "clasico-result",
+      "question": "How did the El Clásico against Mbappé go?",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "coverage_in": [
+          "none"
+        ],
+        "path_in": [
+          "combined"
+        ],
+        "answer_contains_all": [
+          "Mbapp"
+        ],
+        "answer_contains_any": [
+          "brace",
+          "2-1",
+          "two goals"
+        ],
+        "answer_excludes": [
+          "question mark",
+          "was a doubt",
+          "set to miss"
+        ],
+        "query_includes": [
+          "Mbapp"
+        ]
+      },
+      "notes": "Run of Play only has pre-match pieces, so the draft used to lean on them before the web update contradicted it."
+    },
+    {
+      "id": "madrid-title-race",
+      "question": "What's next for Real Madrid in the title race?",
+      "expect": {
+        "search_required": true,
+        "coverage_in": [
+          "none"
+        ],
+        "path_in": [
+          "combined"
+        ]
+      }
+    },
+    {
+      "id": "ballon-dor-latest",
+      "question": "Who won the Ballon d'Or?",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "kb_title_any": [
+          "Kane",
+          "Ballon"
+        ],
+        "answer_contains_all": [
+          "Kane"
+        ]
+      },
+      "notes": "No year given, so it means the latest award (2026, Harry Kane)."
+    },
+    {
+      "id": "ballon-dor-2015",
+      "question": "Who won the Ballon d'Or in 2015?",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      }
+    },
+    {
+      "id": "kane-ballon-why",
+      "question": "Why did Harry Kane win the Ballon d'Or?",
+      "expect": {
+        "kb_title_any": [
+          "Kane"
+        ],
+        "query_includes": [
+          "Kane"
+        ],
+        "query_excludes": [
+          "2023",
+          "2024"
+        ]
+      }
+    },
+    {
+      "id": "world-cup-2010",
+      "question": "Who won the 2010 World Cup?",
+      "answer": true,
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ],
+        "answer_contains_all": [
+          "Spain"
+        ]
+      }
+    },
+    {
+      "id": "emi-martinez",
+      "question": "Is Emi Martinez leaving Aston Villa for Barcelona?",
+      "expect": {
+        "kb_title_any": [
+          "Emi Martinez"
+        ]
+      }
+    },
+    {
+      "id": "mbappe-real",
+      "question": "Mbappé's best games for Real Madrid",
+      "expect": {
+        "kb_title_any": [
+          "Mbapp"
+        ]
+      }
+    },
+    {
+      "id": "fifa-formation",
+      "question": "What formation should I use in EA FC 26 with Yamal and Raphinha?",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      },
+      "notes": "Video-game tactics: evergreen even though it names current players."
+    },
+    {
+      "id": "offside-rule",
+      "question": "Explain the offside rule",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      }
+    },
+    {
+      "id": "premier-league-top",
+      "question": "Who's top of the Premier League?",
+      "expect": {
+        "search_required": true
+      }
+    },
+    {
+      "id": "yamal-doing",
+      "question": "what is my homeboy yamal doing",
+      "expect": {
+        "search_required": true,
+        "latest_news": true
+      }
+    },
+    {
+      "id": "small-talk",
+      "question": "hello, how are you?",
+      "expect": {
+        "search_required": false,
+        "path_in": [
+          "single"
+        ]
+      }
+    }
+  ]
+}

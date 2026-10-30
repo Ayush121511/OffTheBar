@@ -20,3 +20,6 @@ chat_logs/
 *client_secret*.json
 *service-account*.json
 offthebar-*.json
+
+# Eval run reports (evals/run_evals.py)
+evals/reports/

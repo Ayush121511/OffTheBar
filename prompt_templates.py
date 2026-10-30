@@ -189,7 +189,7 @@ Below are excerpts from The Run of Play's articles, each labeled with its publis
 
 - "full": they answer the whole question, and if it's about recent events they're recent enough (compare their dates with today) that nothing newer is likely to change the answer.
 - "partial": they hold a real piece of the answer but not all of it, or newer developments are likely. E.g. his farewell match three weeks ago, for "how has Messi been playing recently" - one recent performance, maybe not the latest.
-- "none": nothing in them answers the question. That includes material from before the event asked about (a match preview when the result is asked), overtaken material (last season's table for this season's race, an old injury for current fitness), and general background that doesn't address the question.
+- "none": nothing in them answers the question. That includes material from before the event asked about (a match preview when the result is asked), overtaken material (last season's table for this season's race, a result from weeks ago when the current state of a title race or a team's form is asked, an old injury for current fitness), and general background that doesn't address the question.
 Evergreen questions (history, rules, careers, tactics) can be answered by articles of any age.
 
 Reply with JSON only: {{"coverage": "full" or "partial" or "none", "reason": "<one short sentence>"}}
@@ -226,6 +226,7 @@ If search is required, generate one concise keyword-rich Google-style query.
 - Convert "recently" or similar freshness terms to "{today}" when useful.
 - Prefer specific player names, clubs, competitions, and metrics like goals, assists, xG, form, table, injury.
 - For follow-ups, include the resolved player, club, competition, or team name. Do not output generic queries like "player recent injuries form".
+- Keep every name the question uses (players, managers, clubs, competitions). Never swap in or add a name, season or year from your own memory - it may be out of date. Today is {today}: "How is United doing under Carrick?" is about Carrick, never about an earlier manager, and a question with no year is about now, not a past season.
 - Keep it short and direct.
 - If search is not required, set query to an empty string.
 

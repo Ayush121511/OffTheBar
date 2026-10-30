@@ -122,6 +122,8 @@ LATEST_NEWS_MARKERS = [
     "rumour", "rumours", "rumor", "rumors", "last match", "last game",
     # questions about how someone is doing now ("How is United doing under Carrick?")
     "doing", "lately", "these days", "at the moment", "form", "this season", "so far",
+    # what happens next depends on where things stand now
+    "what's next", "whats next", "next match", "next game", "upcoming", "title race", "standings",
 ]
 
 
@@ -418,7 +420,14 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
 
 import json
 
+from google.genai import types as genai_types
+
 from gemini_utils import call_gemini_with_key_retry
+
+# The classifier and the coverage check are decisions, not writing: sampled at
+# Gemini's default temperature the same question flipped between runs
+# (search queries dropping "Carrick", coverage "none" vs "partial").
+DECISION_CONFIG = genai_types.GenerateContentConfig(temperature=0)
 from prompt_templates import build_relevance_check_prompt, build_search_classifier_prompt
 
 
@@ -606,7 +615,7 @@ def classify_and_build_query(user_question: str) -> dict:
         response = call_gemini_with_key_retry(
             "gemini-2.5-flash-lite",
             lambda client: client.models.generate_content(
-                model="gemini-2.5-flash-lite", contents=prompt
+                model="gemini-2.5-flash-lite", contents=prompt, config=DECISION_CONFIG
             ),
         )
         parsed = _best_effort_json(response.text)
@@ -637,12 +646,18 @@ def judge_kb_coverage(question: str, search_query: str, context: str) -> str:
     """
     if not (context or "").strip():
         return "none"
+    if _is_latest_news_question(question, search_query) and "[RUN OF PLAY CONTEXT" not in context:
+        # Every hit is labeled ARCHIVE (older than LATEST_NEWS_MAX_AGE_DAYS):
+        # it can't hold the current answer, and flash-lite kept rating such
+        # sets "partial" (a 55-day-old result for "what's next in the title race").
+        _log_query("kb_coverage", {"coverage": "none", "reason": "latest-news question, no Run of Play article from the last 30 days"})
+        return "none"
     prompt = build_relevance_check_prompt(question, search_query or question, context, date.today())
     try:
         response = call_gemini_with_key_retry(
             "gemini-2.5-flash-lite",
             lambda client: client.models.generate_content(
-                model="gemini-2.5-flash-lite", contents=prompt
+                model="gemini-2.5-flash-lite", contents=prompt, config=DECISION_CONFIG
             ),
         )
         verdict = _best_effort_json(response.text)
