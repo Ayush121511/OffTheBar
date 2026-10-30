@@ -76,19 +76,45 @@ def list_wix_posts() -> List[Dict[str, Any]]:
     return posts
 
 
-def _vectors_for_post(post: Dict[str, Any]) -> List[Dict[str, Any]]:
+def list_wix_tags() -> Dict[str, str]:
+    """Every blog tag's label by ID (posts only carry tag IDs)."""
+    labels: Dict[str, str] = {}
+    offset = 0
+
+    while True:
+        response = requests.get(
+            f"{WIX_API_BASE}/v3/tags",
+            headers=_wix_headers(),
+            params={"paging.limit": PAGE_LIMIT, "paging.offset": offset},
+            timeout=15,
+        )
+        response.raise_for_status()
+        page = response.json().get("tags", [])
+        labels.update({tag["id"]: tag.get("label", "") for tag in page if tag.get("id")})
+
+        if len(page) < PAGE_LIMIT:
+            break
+        offset += PAGE_LIMIT
+
+    return labels
+
+
+def _vectors_for_post(post: Dict[str, Any], tag_labels: Dict[str, str] | None = None) -> List[Dict[str, Any]]:
     post_id = post["id"]
     title = post.get("title", "")
     content_text = (post.get("contentText") or "").strip()
     created = post.get("firstPublishedDate", "")
     modified = post.get("lastPublishedDate", created)
+    tags = [tag_labels[t] for t in post.get("tagIds", []) if tag_labels and tag_labels.get(t)]
 
     if not content_text:
         print(f"Skipping '{title}' ({post_id}) - no content text")
         return []
 
     chunks = chunk_article(content_text, max_chunk_length=CHUNK_MAX_CHARS)
-    embeddings, model_used = embed_texts(chunks)
+    # Each chunk is embedded with its article's title in front, so a chunk
+    # that only says "he" still matches searches for who the article is about.
+    embeddings, model_used = embed_texts([f"{title}\n\n{chunk}" for chunk in chunks])
     print(f"'{title}': {len(chunks)} chunks, embedded with {model_used}")
 
     vectors = []
@@ -99,6 +125,8 @@ def _vectors_for_post(post: Dict[str, Any]) -> List[Dict[str, Any]]:
             "metadata": {
                 "doc_id": post_id,
                 "doc_name": f"{title} - {i + 1}",
+                "title": title,
+                "tags": tags,
                 "doc_size": len(chunk),
                 "created": created,
                 "modified": modified,
@@ -111,12 +139,13 @@ def _vectors_for_post(post: Dict[str, Any]) -> List[Dict[str, Any]]:
 def ingest() -> None:
     print(f"[{datetime.now(timezone.utc).isoformat()}] Fetching posts from Wix...")
     posts = list_wix_posts()
-    print(f"Found {len(posts)} posts.")
+    tag_labels = list_wix_tags()
+    print(f"Found {len(posts)} posts, {len(tag_labels)} tags.")
 
     index = get_pinecone_index()
     all_vectors: List[Dict[str, Any]] = []
     for post in posts:
-        all_vectors.extend(_vectors_for_post(post))
+        all_vectors.extend(_vectors_for_post(post, tag_labels))
 
     print(f"Upserting {len(all_vectors)} vectors into Pinecone...")
     for i in range(0, len(all_vectors), UPSERT_BATCH_SIZE):

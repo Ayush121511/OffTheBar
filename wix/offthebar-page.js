@@ -10,8 +10,18 @@ const BOT_AVATAR  = 'https://static.wixstatic.com/media/5dd29f_d03e44b4f7f1481ab
 const SEND_READY_LABEL = '➤ Send';
 const SEND_BUSY_LABEL  = '⏸ Generating…';
 
-// The backend streams this line between its Phase 1 draft and Phase 2 refinement.
-const HALFTIME_LINE = /^##\s*HALFTIME!!!.*$/m;
+// The backend streams "## HALFTIME!!! <status>" between its Phase 1 draft and
+// Phase 2 refinement; only the status is shown (see renderBot).
+const HALFTIME_LINE = /^##\s*HALFTIME!!!\s*(.*)$/m;
+const DEFAULT_PHASE2_STATUS = 'Checking the latest news';
+
+// Full answers end with an "Ask next:" line and a short list of follow-up
+// prompts (the backend's prompt asks for exactly that). They're cut from the
+// answer text and shown as buttons once the answer is done; clicking one
+// sends it as the next question.
+const FOLLOW_UPS_LINE = /^[ \t]*(?:\*\*|__)?Ask next:?(?:\*\*|__)?[ \t]*$/im;
+const FOLLOW_UP_ITEM = /^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/;
+const MAX_FOLLOW_UPS = 3;
 
 // Fallback for a chat iframe that never answers the 'ping' handshake (an older embed).
 const CHAT_READY_FALLBACK_MS = 3000;
@@ -71,16 +81,53 @@ function escapeHtml(s) {
     .replace(/\r?\n/g, '<br>');
 }
 
-// Same as client/js/chat.js: the HALFTIME line shows as a status while Phase 2
-// loads, then disappears once Phase 2 text arrives.
-function renderBot(text) {
+// The status while Phase 2 loads (nothing after the HALFTIME line yet), else null.
+function phase2Status(text) {
   const match = text.match(HALFTIME_LINE);
-  if (!match) return md(text);
+  if (!match || text.slice(match.index + match[0].length).trim()) return null;
+  return match[1].trim() || DEFAULT_PHASE2_STATUS;
+}
 
-  const before = text.slice(0, match.index).trimEnd();
-  const after = text.slice(match.index + match[0].length).trim();
-  if (after) return md(`${before}\n\n${after}`);
-  return md(`${before}\n\n*${match[0].replace(/^##\s*/, '')}*`);
+function splitFollowUps(text) {
+  const match = text.match(FOLLOW_UPS_LINE);
+  if (!match) return { body: text, followUps: [] };
+  const followUps = text.slice(match.index + match[0].length)
+    .split('\n')
+    .map(line => line.match(FOLLOW_UP_ITEM))
+    .filter(Boolean)
+    .map(m => m[1].replace(/\*\*/g, '').replace(/^["“]+|["”]+$/g, '').trim())
+    .filter(Boolean)
+    .slice(0, MAX_FOLLOW_UPS);
+  return { body: text.slice(0, match.index).trimEnd(), followUps };
+}
+
+// While streaming, a last line that could still grow into "Ask next:" stays
+// hidden, so the label never flashes up before it's cut.
+function hidePartialFollowUpsLine(text) {
+  const start = text.lastIndexOf('\n') + 1;
+  const tail = text.slice(start).replace(/[*_\s]/g, '').toLowerCase();
+  return tail && 'asknext:'.startsWith(tail) ? text.slice(0, start) : text;
+}
+
+function followUpButtons(followUps) {
+  const buttons = followUps
+    .map(q => `<button type="button" class="otb-suggestion" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`)
+    .join('');
+  return `<div class="otb-suggestions">${buttons}</div>`;
+}
+
+// Same as client/js/chat.js: while Phase 2 loads, its status shows under the
+// draft as a quiet shimmer line with a live seconds counter (.otb-status in
+// chat-iframe.html), and goes away once Phase 2 text arrives or the answer
+// ends. Follow-up buttons only appear on the final render.
+function renderBot(text, final = false) {
+  const status = phase2Status(text);
+  let { body, followUps } = splitFollowUps(stripHalftime(text));
+  if (!final) body = hidePartialFollowUpsLine(body);
+  let html = md(body);
+  if (status) html += `<div class="otb-status" role="status">${escapeHtml(status)}</div>`;
+  if (final && followUps.length) html += followUpButtons(followUps);
+  return html;
 }
 
 function stripHalftime(text) {
@@ -125,6 +172,7 @@ $w.onReady(() => {
       else markChatReady();
     }
     if (d.type === 'stop-click') stopStreaming();   // cancel stream, keep the partial answer
+    if (d.type === 'suggestion-click' && !streaming) handleSend(d.value || '');
   });
 
   // If the iframe loaded before this handler existed, its load-time
@@ -228,7 +276,8 @@ function sendToChatbot(userMessage) {
           }
 
           lastStreamText += decoder.decode(value, { stream: true });
-          postToHtml({ type: 'update-bot-html', html: renderBot(normalizeEscapes(lastStreamText)), cursor: true });
+          const text = normalizeEscapes(lastStreamText);
+          postToHtml({ type: 'update-bot-html', html: renderBot(text), cursor: !phase2Status(text) });
           pump();
         }).catch(err => {
           if (!isCurrent()) return;
@@ -246,10 +295,12 @@ function sendToChatbot(userMessage) {
     });
 }
 
-// One place that ends a response: normal end, read error, fetch error and Stop.
-function finishBot(fallbackMarkdown) {
+// One place that ends a response: normal end, read error, fetch error and Stop
+// (which passes showFollowUps=false - a stopped answer's list may be cut off).
+function finishBot(fallbackMarkdown, showFollowUps = true) {
   const finalText = stripHalftime(normalizeEscapes(lastStreamText));
-  postToHtml({ type: 'finalize-bot', html: md(finalText || fallbackMarkdown) });
+  const html = finalText ? renderBot(finalText, showFollowUps) : md(fallbackMarkdown);
+  postToHtml({ type: 'finalize-bot', html });
   if (finalText) conversation.push({ role: 'model', content: finalText });
 
   streaming = false;
@@ -267,5 +318,5 @@ function stopStreaming() {
   if (currentReader) currentReader.cancel('user-stopped').catch(() => {});
   try { if (abortCtrl) abortCtrl.abort(); } catch (_) {}
 
-  finishBot('*Generation stopped.*');
+  finishBot('*Generation stopped.*', false);
 }

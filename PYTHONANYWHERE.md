@@ -1,14 +1,29 @@
-# PythonAnywhere Setup
+# PythonAnywhere Setup (legacy)
 
-Keep code in Git and keep secrets in the PythonAnywhere filesystem outside the repo.
+**Status (2026-10-30): legacy, no longer serving the site.** The backend runs on
+Google Cloud Run — see `CLOUDRUN.md`. The Wix page's `API_URL` already points
+at Cloud Run (its request logs show traffic from `https://www.therunofplay.com`
+back to at least 2026-10-01), so this host can be shut down.
 
-Recommended layout:
+## Decommission checklist
+
+1. ~~Change the Wix Velo page's `API_URL` to the Cloud Run URL~~ - done.
+2. ~~Confirm real traffic shows up in the `offthebar-api` Cloud Run logs~~ - done (2026-10-30).
+3. Disable the PythonAnywhere web app and any Task Scheduler entry for
+   `ingest_kb.py` (ingestion now runs as the `offthebar-ingest-kb` Cloud Run Job).
+4. Delete `/home/OffTheBar/OffTheBar/.env` from the server. It sits in the repo
+   root, which the `/assets/<folder>/<file>` path-traversal bug in the code this
+   host still runs can serve (fixed in the repo on 2026-10-30; see CLAUDE.md). If that bug turns out to be reachable
+   through PythonAnywhere's front end, rotate every key that was in the file.
+
+## Layout (as deployed)
 
 ```text
 /home/OffTheBar/OffTheBar/        # git clone
+/home/OffTheBar/OffTheBar/.env    # secrets - inside the repo root (gitignored, but see step 4 above)
 ```
 
-Create `/home/OffTheBar/OffTheBar/.env` from `.env.example`, then fill in the real values.
+`.env` is created from `.env.example` with the real values filled in.
 `run.py` loads `.env` and `.env.sh` automatically before importing the Flask app.
 
 Required environment values:
@@ -16,7 +31,6 @@ Required environment values:
 ```bash
 FLASK_SECRET_KEY="..."
 GEMINI_API_KEY="..."
-HF_TOKEN="..."
 PINECONE_API_KEY="..."
 OFFTHEBAR_CONFIG_PATH="/home/OffTheBar/OffTheBar/config.json"
 ```
@@ -40,30 +54,20 @@ if project_home not in sys.path:
 from run import app as application
 ```
 
-## Scheduled Wix -> Pinecone ingestion
+## Scheduled Wix -> Pinecone ingestion (superseded)
 
-`ingest_kb.py` pulls articles from the Wix blog and (re)indexes them into
-Pinecone. It needs `WIX_API_KEY` and `WIX_SITE_ID` in `.env` (see
-`.env.example`) in addition to the app's required values above.
+Superseded by the `offthebar-ingest-kb` Cloud Run Job + Cloud Scheduler
+(`CLOUDRUN.md`, step 4). Kept for reference only. Don't run both: re-runs are
+idempotent (deterministic `{post_id}-{chunk_index}` vector IDs), but each run
+re-embeds every post through Hugging Face, the likely reason the HF credits
+ran out (see CLAUDE.md, Known issues).
 
-Run it periodically with PythonAnywhere's Task Scheduler ("Tasks" tab):
+The old Task Scheduler command was:
 
 ```bash
 cd /home/OffTheBar/OffTheBar && python3 ingest_kb.py >> /home/OffTheBar/logs/ingest.log 2>&1
 ```
 
-Scheduling limits as of 2026 (worth checking against your actual plan):
-- Free accounts created before 2026-01-15 get exactly **one** daily task, at
-  a fixed time.
-- Free accounts created on/after 2026-01-15 have **no** scheduled tasks at
-  all.
-- Paid plans allow up to 20 tasks, each either daily at a fixed time or
-  hourly at a fixed minute. There's no native "every N hours" option — to
-  approximate a quarter-day cadence, create 4 separate daily tasks at fixed
-  hours (e.g. 00:05, 06:05, 12:05, 18:05 UTC), each running the command
-  above.
-
-Re-running `ingest_kb.py` is safe: each chunk's Pinecone vector ID is
-deterministic (`{post_id}-{chunk_index}`), so re-ingesting a post overwrites
-its existing vectors instead of duplicating them or requiring a destructive
-full-index wipe first.
+PythonAnywhere scheduling limits as of 2026: free accounts created before
+2026-01-15 get one daily task; free accounts created on/after 2026-01-15 get
+none; paid plans allow up to 20 daily-or-hourly tasks.

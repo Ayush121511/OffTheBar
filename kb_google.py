@@ -1,71 +1,34 @@
 from config_env import require_env
 
-import os, time, requests
+import os
+from threading import Lock
 from typing import List
 
-# Primary + fallbacks (all sentence-embedding models)
-MODELS: List[str] = [
-    "BAAI/bge-small-en-v1.5",                 # primary: small, fast, very popular
-    "sentence-transformers/all-MiniLM-L6-v2", # fallback 1: tiny + fast
-    "Snowflake/snowflake-arctic-embed-xs",    # fallback 2: very small, fast
-]
+# Embeddings are computed locally with fastembed's ONNX build of this model.
+# The Pinecone index was built with the same model through Hugging Face's
+# inference API, and the local vectors match the stored ones (cosine 1.0000
+# on a sample of 30), so the index stays valid. Replaces the HF API, which
+# started returning 402 Payment Required in 2026-10, and its fallback models,
+# whose vectors weren't comparable with the index. fastembed caches the model
+# under FASTEMBED_CACHE_PATH (the Docker image bakes it in there).
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
-ROUTER = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
-_hf_token_shape_logged = False
+_embedding_model = None
+_embedding_model_lock = Lock()
 
-def _hf_headers():
-    global _hf_token_shape_logged
-    token = require_env('HF_TOKEN')
-    if not _hf_token_shape_logged:
-        print(
-            "[OffTheBar config] HF_TOKEN loaded "
-            f"length={len(token)} prefix={token[:3]!r} suffix={token[-4:]!r}"
-        )
-        _hf_token_shape_logged = True
-    return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
 
-def _embed(texts: List[str], max_retries_per_model: int = 2, backoff_seconds: float = 1.0):
-    last_err = None
-    for model in MODELS:
-        url = ROUTER.format(model=model)
-        for attempt in range(1, max_retries_per_model + 1):
-            try:
-                resp = requests.post(
-                    url,
-                    headers=_hf_headers(),
-                    json={"inputs": texts},
-                    timeout=5   # <-- timeout reduced to 5 seconds
-                )
-                if resp.status_code == 401:
-                    print(
-                        "[OffTheBar config] Hugging Face returned 401. "
-                        f"Response: {resp.text[:200]}"
-                    )
-                resp.raise_for_status()
-                out = resp.json()
-                # If shaped like [[vector], [vector], ...], return as-is
-                if isinstance(out, list) and out and isinstance(out[0], list) and isinstance(out[0][0], (int, float)):
-                    if len(texts) == 1 and all(isinstance(x, (int, float)) for x in out):
-                        return [out], model
-                    return out, model
-                # Mean pool if token-level embeddings returned
-                if isinstance(out, list) and out and isinstance(out[0], list) and isinstance(out[0][0], list):
-                    pooled = []
-                    for item in out:
-                        vec = [sum(col)/len(col) for col in zip(*item)]
-                        pooled.append(vec)
-                    return pooled, model
-                raise ValueError(f"Unexpected output shape from {model}: {type(out)}")
-            except Exception as e:
-                last_err = e
-                if attempt < max_retries_per_model:
-                    time.sleep(backoff_seconds * attempt)
-                else:
-                    pass
-    raise RuntimeError(f"All embedding models failed. Last error: {last_err}")
+def _get_embedding_model():
+    global _embedding_model
+    with _embedding_model_lock:
+        if _embedding_model is None:
+            from fastembed import TextEmbedding
+            _embedding_model = TextEmbedding(EMBEDDING_MODEL)
+        return _embedding_model
+
+
+def _embed(texts: List[str]):
+    vectors = [vector.tolist() for vector in _get_embedding_model().embed(texts)]
+    return vectors, EMBEDDING_MODEL
 
 print("Loading Pinecone")
 from pinecone import Pinecone, ServerlessSpec

@@ -196,34 +196,13 @@ body {
     }
 }
 
-@keyframes halftimePulse {
-    0% {
-        opacity: 0.45;
+@keyframes halftimeShimmer {
+    from {
+        background-position: 150% 0;
     }
 
-    50% {
-        opacity: 1;
-    }
-
-    100% {
-        opacity: 0.45;
-    }
-}
-
-@keyframes halftimeDotPulse {
-    0% {
-        transform: scale(0.9);
-        box-shadow: 0 0 0 0 rgba(134, 134, 134, 0.45);
-    }
-
-    50% {
-        transform: scale(1.1);
-        box-shadow: 0 0 0 7px rgba(134, 134, 134, 0);
-    }
-
-    100% {
-        transform: scale(0.9);
-        box-shadow: 0 0 0 0 rgba(134, 134, 134, 0);
+    to {
+        background-position: -50% 0;
     }
 }
 
@@ -268,29 +247,58 @@ body {
 }
 
 .halftime-loading {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    color: #7a7a7a;
+    display: inline-block;
+    margin: 8px 0 2px;
     font-size: 15px;
     line-height: 1.3;
-    margin: 8px 0 2px;
-    animation: halftimePulse 1.4s ease-in-out infinite;
+    color: #7a7a7a;
+    background: linear-gradient(90deg, #7a7a7a 40%, #d0d0d0 50%, #7a7a7a 60%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: halftimeShimmer 2s linear infinite;
 }
 
-.halftime-loading__dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: #868686;
-    box-shadow: 0 0 0 0 rgba(134, 134, 134, 0.5);
-    animation: halftimeDotPulse 1.4s ease-in-out infinite;
-    flex-shrink: 0;
+.halftime-loading__time {
+    font-variant-numeric: tabular-nums;
 }
 
-.halftime-loading__text {
-    font-size: 15px;
+.followup-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.message:not(:last-child) .followup-suggestions {
+    display: none;
+}
+
+.followup-suggestion {
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.35;
+    text-align: left;
     color: inherit;
+    background: transparent;
+    border: 1px solid #8a8a8a66;
+    border-radius: 999px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.followup-suggestion:hover {
+    background: #8a8a8a22;
+    border-color: #8a8a8a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .halftime-loading {
+        animation: none;
+        -webkit-text-fill-color: #7a7a7a;
+    }
 }
 
 .message .user i {

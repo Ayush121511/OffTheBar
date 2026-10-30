@@ -8,3 +8,5 @@ nltk
 crawl4ai
 python-dotenv
 gunicorn
+# Pinned: query embeddings must keep matching the vectors already in Pinecone
+fastembed==0.9.1

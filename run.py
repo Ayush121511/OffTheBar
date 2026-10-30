@@ -34,6 +34,7 @@ _load_local_env_files()
 from server.app import app
 from server.website import Website
 from server.backend import Backend_Api
+import kb_search
 
 CONFIG_PATH = Path(os.getenv("OFFTHEBAR_CONFIG_PATH", BASE_DIR / "config.json"))
 
@@ -64,6 +65,11 @@ for route in backend_api.routes:
         view_func = backend_api.routes[route]['function'],
         methods   = backend_api.routes[route]['methods'],
     )
+
+# Load Run of Play's keyword index in the background so the first question
+# doesn't wait for it (skipped in the auto-reloader's watcher process).
+if not site_config.get('debug') or os.getenv("WERKZEUG_RUN_MAIN") == "true":
+    kb_search.warm_up()
 
 if __name__ == '__main__':
     print(f"Running on port {site_config['port']}")

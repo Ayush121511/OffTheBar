@@ -110,7 +110,9 @@
     el.hidden = false;
   }
 
-  // Imitates server/backend.py's two-phase stream: draft, HALFTIME line, pause, refinement.
+  // Imitates server/backend.py's two-phase stream: draft, HALFTIME status line, pause,
+  // refinement. A message containing `mock-nothing-new` ends on the draft, like a
+  // Phase 2 that finds nothing new.
   function mockChat(body, signal) {
     const question = body.meta.content.parts[0].content;
     if (/mock-error/i.test(question)) {
@@ -120,13 +122,15 @@
     const phase1 = `Mock draft for "${question}" - the ball's rolling, but this is a rehearsal, not the match. ` +
       'Here comes a **bold** claim and a short list:\n\n- first point\n- second point';
     const phase2 = '### Mock update\nPhase 2 lands like a late winner. Raw HTML should show as text: ' +
-      '<b>not bold</b>.\n\n- "What else happened?"\n- "Who starts next week?"';
+      '<b>not bold</b>.\n\nAsk next:\n- What else happened?\n- Who starts "next" week & why?';
 
     const script = [];
     phase1.split(' ').forEach((w) => script.push([60, w + ' ']));
-    script.push([60, '\n\n## HALFTIME!!! fetching latest updates\n\n']);
+    script.push([60, '\n\n## HALFTIME!!! Checking the latest news\n\n']);
     script.push([2500, '']);   // Phase 2 retrieval time
-    phase2.split(' ').forEach((w) => script.push([40, w + ' ']));
+    if (!/mock-nothing-new/i.test(question)) {
+      phase2.split(' ').forEach((w) => script.push([40, w + ' ']));
+    }
 
     let timers = [];
     const stop = () => { timers.forEach(clearTimeout); timers = []; };

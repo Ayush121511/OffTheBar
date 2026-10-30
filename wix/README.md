@@ -32,8 +32,9 @@ python3 -m http.server 8000
 
 Pick the backend from the toolbar:
 
-- **mock** (default) - a canned two-phase answer with a HALFTIME pause, no API
-  calls. Send a message containing `mock-error` to test the failure path.
+- **mock** (default) - a canned two-phase answer with a pause between the
+  phases, no API calls. Send a message containing `mock-error` to test the
+  failure path, or `mock-nothing-new` for an answer that ends on the draft.
 - **local** - your local backend at `http://localhost:1338` (`python -u run.py`
   from the repo root).
 - **live** - the real Cloud Run API. Uses real Gemini quota.
@@ -46,6 +47,20 @@ overlap), quirks of the Velo runtime itself (the element APIs are stand-ins),
 and the exact `marked` version (the preview pins 12.0.2; check the Wix package
 manager). So still do one pass in Wix's Preview before publishing.
 
+## Answer rendering
+
+The page code renders each answer from the backend's markdown stream, with two
+pieces of it handled specially (the iframe only sees the resulting HTML):
+
+- `## HALFTIME!!! <status>` - the line between the Phase 1 draft and the Phase 2
+  update. While Phase 2 loads, only the status shows, as a grey shimmering
+  `.otb-status` line; the iframe adds a live seconds counter to it. It goes
+  away once Phase 2 text arrives or the answer ends.
+- `Ask next:` followed by a list - the follow-up prompts every full answer ends
+  with (`prompt_templates.FOLLOW_UP_FORMAT`). They're cut from the text and,
+  once the answer is done, shown as `.otb-suggestion` buttons. Only the latest
+  answer's buttons are visible.
+
 ## Publishing a change
 
 1. Page code: open the Off The Bar page's code panel and replace its whole
@@ -53,8 +68,10 @@ manager). So still do one pass in Wix's Preview before publishing.
 2. `chatHtml`: select the embed, **Edit Code**, and replace the code with
    `chat-iframe.html`.
 3. `inputHtml`: same, with `input-iframe.html`.
-4. In Wix's Preview, try a quick question, a news question (the HALFTIME
-   status should appear and then disappear when the update arrives), Stop in
+4. In Wix's Preview, try a quick question, a news question (a grey
+   shimmering "Checking the latest news" line should appear under the draft
+   with a seconds counter, and disappear when the update arrives or the answer
+   ends), a follow-up suggestion button (it should send as the next question), Stop in
    the middle of an answer (the partial answer should stay), and a `?msg=`
    link. Then publish.
 
@@ -77,8 +94,10 @@ Page code → `chatHtml`:
 | `set-stop-visible` | `visible` | Shows/hides the Stop button |
 | `clear-chat` | | Empties the message list |
 
-`chatHtml` → page code: `iframe-ready` (on load, and in reply to `ping`) and
-`stop-click`. The page code queues everything it sends to `chatHtml` until the
+`chatHtml` → page code: `iframe-ready` (on load, and in reply to `ping`),
+`stop-click`, and `suggestion-click` (`value`, a follow-up suggestion the user
+clicked - the page code sends it as the next question unless an answer is
+still streaming). The page code queues everything it sends to `chatHtml` until the
 first `iframe-ready` (or 3 seconds, whichever comes first), because messages
 posted before the embed has loaded can be lost.
 

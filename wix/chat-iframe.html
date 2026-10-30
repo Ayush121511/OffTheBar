@@ -147,6 +147,53 @@
     0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
     40%           { transform: scale(1);   opacity: 1; }
   }
+
+  /* Phase 2 status ("Checking the latest news") under the draft: a quiet
+     shimmer, like a "thinking" label */
+  .otb-status {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 0.92em;
+    color: var(--muted);
+    background: linear-gradient(90deg, var(--muted) 40%, var(--text) 50%, var(--muted) 60%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: otb-shimmer 2s linear infinite;
+  }
+  @keyframes otb-shimmer {
+    from { background-position: 150% 0; }
+    to   { background-position: -50% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .otb-status { animation: none; -webkit-text-fill-color: var(--muted); }
+  }
+  .otb-status-time { font-variant-numeric: tabular-nums; }
+
+  /* Follow-up suggestions under a finished answer - only the latest answer's */
+  .otb-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .msg:not(:last-child) .otb-suggestions { display: none; }
+  .otb-suggestion {
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.35;
+    text-align: left;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--stop-border);
+    border-radius: 999px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  .otb-suggestion:hover { background: var(--stop-bg-hover); border-color: var(--stop-border-hover); }
+  .otb-suggestion:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -248,12 +295,47 @@
   function updateBotHtml(partialHtml, showCursor = true){
     // ⛔ No auto-scroll during streaming
     botContent().innerHTML = partialHtml + (showCursor ? '<span class="cursor"></span>' : '');
+    syncStatusTimer();
   }
 
   function finalizeBot(finalHtml){
     // ⛔ No auto-scroll on finalize (keeps user position)
-    if (!finalHtml) return; // never blank an answer that's already on screen
-    botContent().innerHTML = finalHtml;
+    if (finalHtml) botContent().innerHTML = finalHtml; // never blank an answer that's already on screen
+    syncStatusTimer();
+  }
+
+  // Live seconds on the Phase 2 status line, like a "thinking" timer. Nothing
+  // streams while Phase 2 loads, so the count runs here rather than in the page code.
+  let statusTimer = null;
+  let statusStartedAt = 0;
+
+  function formatElapsed(ms){
+    const s = Math.floor(ms / 1000);
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  }
+
+  function tickStatus(){
+    const status = log.querySelector('.otb-status');
+    if (!status) return;
+    let time = status.querySelector('.otb-status-time');
+    if (!time){
+      time = el('span', 'otb-status-time');
+      status.appendChild(time);
+    }
+    time.textContent = ' · ' + formatElapsed(Date.now() - statusStartedAt);
+  }
+
+  // Each re-render replaces the status element, so the start time lives here.
+  function syncStatusTimer(){
+    if (!log.querySelector('.otb-status')){
+      clearInterval(statusTimer);
+      statusTimer = null;
+      statusStartedAt = 0;
+      return;
+    }
+    if (!statusStartedAt) statusStartedAt = Date.now();
+    tickStatus();
+    if (!statusTimer) statusTimer = setInterval(tickStatus, 1000);
   }
 
   // Measure stopbar height so .log can reserve just enough room
@@ -275,6 +357,12 @@
     window.parent.postMessage({ type:'stop-click' }, '*');
   });
 
+  // Click on a follow-up suggestion -> parent sends it as the next question
+  log.addEventListener('click', (e) => {
+    const btn = e.target.closest('.otb-suggestion');
+    if (btn) window.parent.postMessage({ type:'suggestion-click', value: btn.dataset.q || btn.textContent }, '*');
+  });
+
   // Messages from parent page
   window.addEventListener('message', (ev) => {
     const d = ev.data || {};
@@ -282,6 +370,7 @@
     if (d.type === 'clear-chat'){
       log.innerHTML = '';
       lastWasBot = false;
+      syncStatusTimer();
     }
     if (d.type === 'set-theme-vars' && d.vars){
       Object.entries(d.vars).forEach(([k,v]) => document.documentElement.style.setProperty(k, v));

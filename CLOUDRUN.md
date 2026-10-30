@@ -4,6 +4,24 @@ Replaces PythonAnywhere as the host for `/api/chat`. Runs alongside the
 existing `searxng-docker` Cloud Run service in the same GCP project — same
 billing account, no new vendor.
 
+## Current deployment (verified 2026-10-30)
+
+Project `runofplay` (number `607277832880`), region `asia-south1`.
+
+| Resource | What it is | State |
+|---|---|---|
+| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00002-p56`, 100% traffic, deployed 2026-09-21. Public (`allUsers` invoker). No `--max-instances` cap. |
+| `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | **Failing every run since 2026-10-08** - Hugging Face embeddings return `402 Payment Required`. Fixed in code (embeddings now computed locally, see CLAUDE.md); recovers once `offthebar-api` is redeployed and the job's image updated (step 4). |
+| `offthebar-ingest-kb-daily` (Cloud Scheduler) | triggers the job at `0 4 * * *` UTC | Enabled. |
+| `searxng-docker` (service) | web search backend | Live. |
+| `searx-proxy` | legacy Gen2 Cloud Function `searx_proxy` | Still ACTIVE, unused by this code. Candidate for deletion. |
+
+API URL: `https://offthebar-api-607277832880.asia-south1.run.app/api/chat`
+(`https://offthebar-api-tivjlndb6a-el.a.run.app` is the same service).
+The Wix page already calls this URL (step 3 is done): request logs show
+`/api/chat` traffic from `https://www.therunofplay.com` back to at least
+2026-10-01.
+
 ## Why Cloud Run (not a plain serverless function)
 
 `crawl4AI.py` drives Playwright/Chromium to scrape search-result pages, and
@@ -22,7 +40,7 @@ gcloud config set project <your-gcp-project-id>   # same project as searxng-dock
 ### 1. Store secrets in Secret Manager (don't bake them into the image)
 
 ```bash
-for name in FLASK_SECRET_KEY GEMINI_API_KEY GEMINI_API_KEY_2 HF_TOKEN \
+for name in FLASK_SECRET_KEY GEMINI_API_KEY GEMINI_API_KEY_2 \
             PINECONE_API_KEY WIX_API_KEY WIX_SITE_ID; do
   gcloud secrets create "$name" --replication-policy="automatic" 2>/dev/null
   printf '%s' "REPLACE_ME" | gcloud secrets versions add "$name" --data-file=-
@@ -33,7 +51,24 @@ Set each secret's actual value (via `gcloud secrets versions add NAME
 --data-file=-`, piping in the real value) instead of leaving `REPLACE_ME` —
 the loop above just creates the slots. Add any other keys from
 `.env.example` you use (e.g. `GEMINI_API_KEYS` if you use the CSV form
-instead of numbered keys).
+instead of numbered keys). The `HF_TOKEN` secret from the original setup is
+no longer used (embeddings run locally since 2026-10-30) and can be deleted
+once a deploy without it is live.
+
+Then let the service's runtime account read them. Cloud Run's default
+compute service account has no Secret Manager access, and the first real
+deploy failed on exactly this (`Permission denied on secret ... for Revision
+service account 607277832880-compute@developer.gserviceaccount.com`):
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe "$(gcloud config get-value project)" --format="value(projectNumber)")
+for name in FLASK_SECRET_KEY GEMINI_API_KEY GEMINI_API_KEY_2 \
+            PINECONE_API_KEY WIX_API_KEY WIX_SITE_ID; do
+  gcloud secrets add-iam-policy-binding "$name" \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
+```
 
 ### 2. Build and deploy
 
@@ -44,12 +79,17 @@ gcloud run deploy offthebar-api \
   --source . \
   --region asia-south1 \
   --allow-unauthenticated \
-  --memory 1Gi \
+  --memory 2Gi \
   --cpu 1 \
   --timeout 300 \
   --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1,SEARXNG_URL=https://searxng-docker-607277832880.asia-south1.run.app" \
-  --set-secrets "FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest,HF_TOKEN=HF_TOKEN:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
+  --set-secrets "FLASK_SECRET_KEY=FLASK_SECRET_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
 ```
+
+`--memory 2Gi` (was 1Gi up to revision `00002`): the local embedding model adds
+roughly 260MB per process (measured: ~80MB for fastembed/onnxruntime, ~180MB
+for the loaded model), on top of headless Chromium during web scraping. At
+current traffic the extra memory costs next to nothing.
 
 `--source .` has Cloud Build build the `Dockerfile` and push straight to Cloud
 Run — no separate `docker build`/`docker push`/Artifact Registry steps
@@ -62,19 +102,37 @@ routinely runs longer under real traffic.
 The command prints a `*.run.app` URL when it finishes — that's your new
 `API_URL`.
 
+The service is public and the app has no API credential check or rate limit,
+so nothing caps how far it scales under abuse (Cloud Run's default instance
+limit applies). The current deployment has no cap; a cheap guard is:
+
+```bash
+gcloud run services update offthebar-api --region asia-south1 --max-instances 3
+```
+
 ### 3. Point the Wix page at the new URL
 
-In the Velo page code you shared, update:
+**Status: done** (confirmed 2026-10-30 from the Velo page code and the
+request logs). The Velo page code sets:
 
 ```js
-const API_URL = 'https://offthebar-api-<hash>-<region>.a.run.app/api/chat';
+const API_URL = 'https://offthebar-api-607277832880.asia-south1.run.app/api/chat';
 ```
 
 No other change needed — the `fetch()`/streaming logic is host-agnostic.
+Once it's switched, decommission PythonAnywhere (see `PYTHONANYWHERE.md`).
 
 ### 4. Scheduled `ingest_kb.py`
 
-Live, replacing PythonAnywhere's Task Scheduler entirely. Reuses the same
+Replaces PythonAnywhere's Task Scheduler entirely. Ran cleanly every day
+2026-09-21 → 2026-10-07; **every run since 2026-10-08 has failed** on
+Hugging Face `402 Payment Required` (the job re-embedded all ~660 posts each
+run through the paid API). Embeddings now run locally inside the image, so
+the job needs no Hugging Face account; it recovers once it runs an image
+built from the fixed code. Check run history with:
+`gcloud run jobs executions list --job offthebar-ingest-kb --region asia-south1 --limit 10`
+
+Reuses the same
 image already pushed for `offthebar-api` — no second image to build or
 store — just overrides the container command:
 
@@ -86,7 +144,7 @@ gcloud run jobs create offthebar-ingest-kb \
   --args ingest_kb.py \
   --memory 1Gi --cpu 1 --task-timeout 900 --max-retries 1 \
   --set-env-vars "PINECONE_INDEX_NAME=football-docs,PINECONE_CLOUD=aws,PINECONE_REGION=us-east-1" \
-  --set-secrets "HF_TOKEN=HF_TOKEN:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
+  --set-secrets "PINECONE_API_KEY=PINECONE_API_KEY:latest,WIX_API_KEY=WIX_API_KEY:latest,WIX_SITE_ID=WIX_SITE_ID:latest"
 ```
 
 Get the current image digest with:
@@ -137,6 +195,14 @@ immediately instead of only under hypothetical multi-worker gunicorn). If
 conversation history persistence matters in production, that needs a real
 datastore (Firestore is the natural pick, same GCP project) before or
 shortly after this migration — not solved as part of this change.
+
+## Security note
+
+Secrets reach the service only as env vars from Secret Manager, and
+`.dockerignore` keeps `.env` out of the image. Keep it that way: never `COPY` a
+`.env` or key file into the image. (Revisions up to `00002` also had an
+`/assets` path traversal that served repo files like `config.json`; fixed on
+2026-10-30, see CLAUDE.md.)
 
 ## Local image test (optional, before deploying)
 

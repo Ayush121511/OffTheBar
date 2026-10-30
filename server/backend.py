@@ -5,6 +5,7 @@ Football analysis backend API with streaming Gemini responses.
 
 from __future__ import annotations
 import random
+import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 from flask import Response, request, stream_with_context
@@ -13,6 +14,7 @@ from google.genai import types as genai_types
 from chat_storage import save_chat_turn
 from gemini_utils import call_gemini_with_key_retry, get_gemini_api_keys
 from prompt_templates import (
+    build_answer_turn,
     build_chat_system_prompt,
     build_complete_context_instruction,
     build_first_draft_instruction,
@@ -20,15 +22,18 @@ from prompt_templates import (
 )
 from ragwithsearch import ask_from_llm, error_messages
 
-halftime_phrases = [
-    "HALFTIME!!! fetching latest updates",
-    "HALFTIME!!! loading fresh news",
-    "HALFTIME!!! pulling in live details",
-    "HALFTIME!!! grabbing new reports",
-    "HALFTIME!!! bringing fresh updates",
-    "HALFTIME!!! checking for latest info",
-    "HALFTIME!!! scanning for fresh news",
-    "HALFTIME!!! gathering live updates"
+# Streamed as "## HALFTIME!!! <status>" between Phase 1 and Phase 2. The
+# clients (wix/offthebar-page.js, client/js/chat.js) show only the status, as a
+# quiet "working" line while Phase 2 loads, and drop the line once Phase 2
+# text arrives or the answer ends. The "## HALFTIME!!!" prefix is the marker
+# they look for - keep it, or older embeds show the raw line.
+HALFTIME_MARKER = "## HALFTIME!!! "
+HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
+phase2_statuses = [
+    "Checking the latest news",
+    "Looking for newer reports",
+    "Scanning fresh headlines",
+    "Checking for updates",
 ]
 
 GEMINI_SAFETY_SETTINGS = [
@@ -193,20 +198,21 @@ class Backend_Api:
             print("search_required", search_required)
             print("Jailbreak:", jailbreak)
 
-            # Build the combined conversation for Gemini
-            first_user_prompt = f"{system_message}\n\n{prompt['content']}"
-
-            built_conversation: List[Dict[str, str]] = (
-                extra
-                + [entry for entry in conversation_history if entry["role"] != "system"]
-                + [{"role": "user", "content": first_user_prompt}]
-                + [{"role": "model", "content": f"\n{news_content}"}]
-            )
-
-            gemini_conversation = [
+            # Earlier turns as they were, then one user turn with this
+            # question's retrieved context, the question and the instruction.
+            # The system prompt goes in as Gemini's system instruction. It used
+            # to come after the history, with the context as a "model" turn, so
+            # Gemini trusted an old archive article over its own earlier answers
+            # (it said Messi never played a farewell match right after telling
+            # the user about the 3-0 win over Benin).
+            history_turns = [
                 {"role": _to_gemini_role(msg["role"]), "parts": [{"text": msg["content"]}]}
-                for msg in built_conversation
+                for msg in extra + [entry for entry in conversation_history if entry["role"] != "system"]
             ]
+
+            def contents_with(instruction: str) -> List[Dict[str, Any]]:
+                answer_turn = build_answer_turn(news_content, prompt["content"], instruction)
+                return history_turns + [{"role": "user", "parts": [{"text": answer_turn}]}]
 
             # === Fast path: if no search is required, stream immediately (complete context) ===
             if not search_required:
@@ -226,26 +232,14 @@ class Backend_Api:
                         UTF-8 encoded bytes chunks of the response.
                     """
                     try:
-                        # Add a final instruction indicating we have complete context.
-                        convo.append(
-                            {
-                                "role": "user",
-                                "parts": [
-                                    {"text": build_complete_context_instruction()}
-                                ],
-                            }
-                        )
-
                         model_name = "gemini-2.5-flash"
 
                         def _call_complete_context(client):
-                            contents = list(convo) + [
-                                {"role": "user", "parts": [{"text": prompt["content"]}]}
-                            ]
                             return client.models.generate_content_stream(
                                 model=model_name,
-                                contents=contents,
+                                contents=convo,
                                 config=genai_types.GenerateContentConfig(
+                                    system_instruction=system_message,
                                     max_output_tokens=2100,
                                     temperature=0.5,
                                     top_p=0.5,
@@ -284,7 +278,7 @@ class Backend_Api:
                     response_parts: List[str] = []
                     try:
                         for chunk in stream_gemini_flash_fast(
-                            list(gemini_conversation),
+                            contents_with(build_complete_context_instruction()),
                             error_messages,
                         ):
                             response_parts.append(chunk.decode("utf-8", errors="replace"))
@@ -322,6 +316,7 @@ class Backend_Api:
                             model="gemini-2.5-flash",
                             contents=user_prompt["content"],
                             config=genai_types.GenerateContentConfig(
+                                system_instruction=system_message,
                                 max_output_tokens=2400,
                                 temperature=0.4,
                                 top_p=0.6,
@@ -398,25 +393,15 @@ class Backend_Api:
 
                 # Phase 1 (fast)
                 def _call_phase1(client):
-                    contents = list(gemini_conversation) + [
-                        {
-                            "role": "user",
-                            "parts": [
-                                {
-                                    "text": prompt["content"]
-                                    + "\n"
-                                    + build_first_draft_instruction()
-                                }
-                            ],
-                        }
-                    ]
                     return client.models.generate_content_stream(
                         model="gemini-2.5-flash",
-                        contents=contents,
+                        contents=contents_with(build_first_draft_instruction()),
                         config=genai_types.GenerateContentConfig(
+                            system_instruction=system_message,
                             max_output_tokens=5000,
                             temperature=0.3,
                             top_p=0.5,
+                            safety_settings=GEMINI_SAFETY_SETTINGS,
                         ),
                     )
 
@@ -450,7 +435,7 @@ class Backend_Api:
                         continue
 
                 yield "\n\n".encode("utf-8")
-                yield ("## " + random.choice(halftime_phrases) + "\n\n").encode("utf-8")
+                yield (HALFTIME_MARKER + random.choice(phase2_statuses) + "\n\n").encode("utf-8")
 
 
                 print("Initial response received from Gemini API.")
@@ -489,15 +474,13 @@ class Backend_Api:
                             yield chunk
                         except Exception as exc:
                             print(chunk)
+                    # Nothing new (NO_NEW_UPDATES or empty text) or no new
+                    # context: the answer just ends on the Phase 1 draft - the
+                    # clients drop the status line, so nothing is left hanging.
                     if not yielded_any:
-                        # stream_gemini_flash yields nothing (no exception)
-                        # when Gemini returns the NO_NEW_UPDATES sentinel or
-                        # empty text - previously that left the stream ending
-                        # right at "HALFTIME" with no resolution.
-                        print("Phase 2 yielded nothing (no new updates) - closing out the response instead of leaving it hanging.")
-                        yield "\n\n_Nothing new beyond the first take - what's above still stands._".encode("utf-8")
+                        print("Phase 2 yielded nothing (no new updates) - ending on the Phase 1 draft.")
                 else:
-                    yield "\n\n_No further live updates were available, so this answer used the first-pass context only._".encode("utf-8")
+                    print("Phase 2 found no new context - ending on the Phase 1 draft.")
 
             def generate_two_phase() -> Iterable[bytes]:
                 """Wraps stream_fast_gemini() to save the full transcript once it ends."""
@@ -507,7 +490,8 @@ class Backend_Api:
                         response_parts.append(chunk.decode("utf-8", errors="replace"))
                         yield chunk
                 finally:
-                    save_chat_turn(conversation_id, prompt["content"], "".join(response_parts))
+                    transcript = HALFTIME_LINE.sub("", "".join(response_parts))
+                    save_chat_turn(conversation_id, prompt["content"], re.sub(r"\n{3,}", "\n\n", transcript).strip())
 
             return Response(
                 stream_with_context(generate_two_phase()),

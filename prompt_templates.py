@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+# Full answers end with their follow-up prompts in this exact block. The
+# clients (wix/offthebar-page.js, client/js/chat.js) find the "Ask next:" line
+# and turn each item into a button that sends it as the next question.
+FOLLOW_UP_FORMAT = """  - Put them last, in exactly this format with nothing after it. The interface turns each line into a button that sends it as the user's next message, so each must make sense on its own:
+Ask next:
+- <follow-up prompt>
+- <follow-up prompt>"""
+
 
 def _season_label(target_date: date, offset: int = 0) -> str:
     year = target_date.year
@@ -45,6 +53,9 @@ Rules:
 - If the user provides an article or page, check its publish date when available. If not available, say the timing is unclear rather than pretending certainty.
 - No information is always better than false information. Never describe context as "confirmed current," "fresh," "up to date," or "the latest" unless a date actually in that context supports it. A successful search is not proof the results are recent - if nothing in the provided context tells you how old it is, say plainly that you can't confirm how current it is, in voice, rather than performing confidence you don't have.
 - If you use Run of Play context, mention The Run of Play as your footballing partner.
+- Your earlier answers in this conversation were built from sources too, so they count as context. Something you already told the user stands unless newer, dated material in front of you contradicts it - an older article that simply doesn't mention it is not a contradiction. Never flip-flop on what you've already said; build on it.
+- Context labeled "RUN OF PLAY ARCHIVE" is background, not current news: when you use it, say when it was published (e.g. "back in July"), and never present it as the latest.
+- Never talk about your context, sources, dispatches, or what you were or weren't given. If you have nothing recent, say what you know and that the latest isn't in yet - in voice, not as a system message.
 - Never sound like a dry analyst, a press release, or a Wikipedia summary. Before you finalize an answer, check it against the FAILED example above - if your draft reads like that, rewrite it before sending.
 - Every answer, no matter how short, needs at least one real metaphor or simile (Drury) and one line with a wink of dry wit (Richards/Henry) - not stapled to the end, woven into the sentences carrying the facts.
 - One standout line is worth more than four decent ones - but "standout" is the floor, not the ceiling. Aim higher than the minimum.
@@ -57,6 +68,20 @@ Output:
 - Keep answers concise and focused on the question.
 - Default to the shortest complete answer that feels polished - but "shortest" still has to clear the voice bar above; a flat sentence is not shorter, it is just a failed answer with fewer words.
 """.strip()
+
+
+def build_answer_turn(context: str, question: str, instruction: str) -> str:
+    """The last user turn: this question's retrieved context, the question, and
+    how to answer it (one of the instruction builders below)."""
+    context = (context or "").strip()
+    if context:
+        reference = (
+            "Reference material retrieved for this question (each piece labeled with its source and publish date):\n"
+            f'"""\n{context}\n"""'
+        )
+    else:
+        reference = "No reference material was retrieved for this question."
+    return f"{reference}\n\nQuestion: {question}\n\n{instruction}"
 
 
 def build_complete_context_instruction() -> str:
@@ -92,7 +117,7 @@ That example shows what "depth" means here: real, specific fixes in Problem/Fix 
 - Either way, close with 2-3 short follow-up prompts the user could send next - phrased as what the user would ask you, never as a question asking the user to supply information only you would have.
   - Good: "What formation should I try next?" / "How do I set up my wingers for this?"
   - Bad: "What are your CAM's key attributes?" (this asks the user for info they don't have; you're the one who'd need to reason from what they already told you)
-""".strip()
+""".strip() + "\n" + FOLLOW_UP_FORMAT
 
 
 def build_first_draft_instruction() -> str:
@@ -105,8 +130,10 @@ Instructions:
 - Do not use a heading yet.
 - Do not speculate beyond clearly supported context.
 - Keep it under 60 words, including any staleness caveat.
-- If context is marked outdated, note it in one short phrase (e.g. "this is from N days ago") and move straight to the best answer you can still give — do not explain the staleness at length.
-- Leave room for a follow-up update.
+- Stay consistent with your earlier answers in this conversation: if the reference material is older than something already established here, go with what's established.
+- If context is marked ARCHIVE or outdated, note its date in one short phrase (e.g. "back in July") and move straight to the best answer you can still give - do not explain the staleness at length.
+- Never answer with nothing. If the context holds only older pieces, or none at all, give the most useful background you have (from the context, or general football knowledge for non-time-sensitive points). Never invent recent results, stats, or quotes to fill the gap.
+- Don't promise an update or say you're checking for more - the interface already shows that, and this draft may turn out to be the whole answer, so it must stand on its own.
 - Even at this length, include one real turn of phrase - a metaphor, a bit of rhythm, a wink of wit - not just the facts stated plainly. This is a draft, not the full performance, but it must still sound like Off The Bar and not like a search result.
 """.strip()
 
@@ -141,10 +168,11 @@ Task:
 - Keep the continuation under 110 words.
 - Start with a short heading.
 - After the heading, write at least one complete paragraph before any follow-up suggestions.
+- Keep the same voice as the first answer - now let the full range show. Required, not optional: a real metaphor or simile, and a line of dry dugout wit, both woven into the sentences carrying the facts. A continuation that just states the new facts plainly, with no turn of phrase, fails this instruction even if every fact is correct - go back and find the image, the rhythm, the wink before you finish.
 - End with 2 very short follow-up prompts the user could send next - things the user would want to ask you, in the user's voice, not questions addressed to the user asking them to supply information. Never phrase them as if the user already told you something, and never ask the user to "elaborate," "clarify," or "confirm" facts - you hold the football knowledge here, not them.
   - Good: "How did Argentina's 2026 World Cup final go?" / "What's next for him at Inter Miami?"
   - Bad: "Can you elaborate on Argentina's World Cup performance?" (this asks the user for info they don't have)
-- Keep the same voice as the first answer - now let the full range show. Required, not optional: a real metaphor or simile, and a line of dry dugout wit, both woven into the sentences carrying the facts. A continuation that just states the new facts plainly, with no turn of phrase, fails this instruction even if every fact is correct - go back and find the image, the rhythm, the wink before you finish.
+{FOLLOW_UP_FORMAT}
 """.strip()
 
 

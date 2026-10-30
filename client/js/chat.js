@@ -32,32 +32,92 @@ const format = (text) => {
   return text.replace(/(?:\r\n|\r|\n)/g, "<br>");
 };
 
-const renderAssistantText = (text) => {
-  const halftimePattern = /^##\s*HALFTIME!!!.*$/gm;
-  const matches = [...text.matchAll(halftimePattern)];
+// The backend streams "## HALFTIME!!! <status>" between its Phase 1 draft and
+// Phase 2 refinement. While Phase 2 loads, only the status shows, as a quiet
+// shimmer line under the draft with a live seconds counter; it goes away once
+// Phase 2 text arrives or the answer ends. Same as wix/offthebar-page.js.
+const HALFTIME_LINE = /^##\s*HALFTIME!!!\s*(.*)$/m;
 
-  if (!matches.length) {
-    return markdown.render(text);
+// Full answers end with an "Ask next:" list of follow-up prompts; once the
+// answer is done they show as buttons that send the question.
+const FOLLOW_UPS_LINE = /^[ \t]*(?:\*\*|__)?Ask next:?(?:\*\*|__)?[ \t]*$/im;
+const FOLLOW_UP_ITEM = /^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$/;
+
+const stripHalftime = (text) =>
+  text.replace(HALFTIME_LINE, "").replace(/\n{3,}/g, "\n\n").trim();
+
+const escapeHtml = (text) =>
+  text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c]);
+
+const splitFollowUps = (text) => {
+  const match = text.match(FOLLOW_UPS_LINE);
+  if (!match) return { body: text, followUps: [] };
+  const followUps = text
+    .slice(match.index + match[0].length)
+    .split("\n")
+    .map((line) => line.match(FOLLOW_UP_ITEM))
+    .filter(Boolean)
+    .map((m) => m[1].replace(/\*\*/g, "").replace(/^["“]+|["”]+$/g, "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return { body: text.slice(0, match.index).trimEnd(), followUps };
+};
+
+// While streaming, a last line that could still grow into "Ask next:" stays hidden.
+const hidePartialFollowUpsLine = (text) => {
+  const start = text.lastIndexOf("\n") + 1;
+  const tail = text.slice(start).replace(/[*_\s]/g, "").toLowerCase();
+  return tail && "asknext:".startsWith(tail) ? text.slice(0, start) : text;
+};
+
+const renderAssistantText = (text, final = false) => {
+  let { body, followUps } = splitFollowUps(stripHalftime(text));
+  if (!final) body = hidePartialFollowUpsLine(body);
+  let html = markdown.render(body);
+
+  const match = text.match(HALFTIME_LINE);
+  if (match && !text.slice(match.index + match[0].length).trim()) {
+    const status = match[1].trim() || "Checking the latest news";
+    html += `<div class="halftime-loading" role="status" aria-live="polite">${escapeHtml(status)}</div>`;
   }
-
-  const firstMatch = matches[0];
-  const lastMatch = matches[matches.length - 1];
-  const beforeHalftime = text.slice(0, firstMatch.index).trimEnd();
-  const afterHalftime = text
-    .slice((lastMatch.index || 0) + lastMatch[0].length)
-    .trim();
-
-  if (afterHalftime) {
-    const mergedText = [beforeHalftime, afterHalftime].filter(Boolean).join("\n\n");
-    return markdown.render(mergedText);
+  if (final && followUps.length) {
+    const buttons = followUps
+      .map((q) => `<button type="button" class="followup-suggestion" data-q="${escapeHtml(q)}">${escapeHtml(q)}</button>`)
+      .join("");
+    html += `<div class="followup-suggestions">${buttons}</div>`;
   }
+  return html;
+};
 
-  const halftimeLabel = firstMatch[0].replace(/^##\s*/, "").trim();
-  const contentBefore = beforeHalftime ? markdown.render(beforeHalftime) : "";
-  return (
-    contentBefore +
-    `<div class="halftime-loading" role="status" aria-live="polite"><span class="halftime-loading__dot"></span><span class="halftime-loading__text">${halftimeLabel}</span></div>`
-  );
+// Live seconds on the status line. Nothing streams while Phase 2 loads, so it
+// ticks on its own; each re-render replaces the element, so the start time
+// lives here.
+let statusTimer = null;
+let statusStartedAt = 0;
+
+const tickStatus = () => {
+  const status = document.querySelector(".halftime-loading");
+  if (!status) return;
+  let time = status.querySelector(".halftime-loading__time");
+  if (!time) {
+    time = document.createElement("span");
+    time.className = "halftime-loading__time";
+    status.appendChild(time);
+  }
+  const s = Math.floor((Date.now() - statusStartedAt) / 1000);
+  time.textContent = ` · ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}`;
+};
+
+const syncStatusTimer = () => {
+  if (!document.querySelector(".halftime-loading")) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+    statusStartedAt = 0;
+    return;
+  }
+  if (!statusStartedAt) statusStartedAt = Date.now();
+  tickStatus();
+  if (!statusTimer) statusTimer = setInterval(tickStatus, 1000);
 };
 
 message_input.addEventListener("blur", () => {
@@ -214,6 +274,7 @@ const ask_gpt = async (message) => {
 
       document.getElementById(`gpt_${window.token}`).innerHTML =
         renderAssistantText(text);
+      syncStatusTimer();
       document.querySelectorAll(`code`).forEach((el) => {
         hljs.highlightElement(el);
       });
@@ -221,6 +282,11 @@ const ask_gpt = async (message) => {
       window.scrollTo(0, 0);
       message_box.scrollTo({ top: message_box.scrollHeight, behavior: "auto" });
     }
+
+    text = stripHalftime(text);
+    document.getElementById(`gpt_${window.token}`).innerHTML =
+      renderAssistantText(text, true);
+    syncStatusTimer();
 
     // if text contains :
     if (
@@ -364,7 +430,7 @@ const load_conversation = async (conversation_id) => {
                 <div class="content">
                     ${
                       item.role == "assistant"
-                        ? markdown.render(item.content)
+                        ? renderAssistantText(item.content, true)
                         : item.content
                     }
                 </div>
@@ -521,6 +587,14 @@ message_input.addEventListener(`keydown`, async (evt) => {
       message_input.style.removeProperty("height");
       message_input.style.height = message_input.scrollHeight + 4 + "px";
     }
+  });
+
+  // A follow-up suggestion under an answer sends that question
+  message_box.addEventListener(`click`, async (evt) => {
+    const button = evt.target.closest(`.followup-suggestion`);
+    if (!button || prompt_lock) return;
+    message_input.value = button.dataset.q;
+    await handle_ask();
   });
 
   send_button.addEventListener(`click`, async () => {

@@ -8,7 +8,8 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    NLTK_DATA=/usr/local/share/nltk_data
+    NLTK_DATA=/usr/local/share/nltk_data \
+    FASTEMBED_CACHE_PATH=/opt/fastembed
 
 WORKDIR /app
 
@@ -19,6 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m playwright install --with-deps chromium
 
 RUN python -m nltk.downloader -d "$NLTK_DATA" punkt punkt_tab
+
+# Bake the embedding model (kb_google.EMBEDDING_MODEL, ~67MB) into the image,
+# so neither the service nor the ingestion job downloads it on startup -
+# fastembed's default cache is /tmp, which on Cloud Run counts against memory.
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
 
 COPY . .
 
