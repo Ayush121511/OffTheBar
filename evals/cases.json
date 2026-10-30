@@ -1,112 +1,18 @@
 {
   "as_of": "2026-10-30",
-  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question.",
+  "about": "Expected behaviour of the Off The Bar pipeline per question. Expectations about current events drift as news moves on - re-check them against the Run of Play site and the news before trusting a failure. Every key under 'expect' is optional; '*_in' keys list every acceptable value. Cases with \"answer\": true also run the full /api/chat answer when the runner gets --answers. 'query_includes' / 'query_excludes' check the classifier's web search query (case-insensitive): it once swapped Carrick for Erik ten Hag and put 2023 into a 2026 question. Every case belongs to one 'domain' (listed below); scores are reported per domain and per section (evals/scoring.py).",
+  "domains": {
+    "latest-news": "Current events, form and standings - needs fresh information.",
+    "match-results": "How a specific recent match went.",
+    "awards": "Awards and records, with and without a year.",
+    "transfers": "Transfers, contracts and rumours.",
+    "history": "Past tournaments, finals and careers - evergreen.",
+    "rules-tactics": "Laws of the game and tactical concepts - evergreen, no search.",
+    "gaming": "EA FC / FIFA / Ultimate Team questions - evergreen even when they name current players.",
+    "conversation": "Multi-turn chats: follow-ups with pronouns, and staying consistent with earlier answers.",
+    "robustness": "Typos, slang and small talk."
+  },
   "cases": [
-    {
-      "id": "messi-farewell-score",
-      "question": "What was the score in Messi's farewell match for Argentina?",
-      "answer": true,
-      "expect": {
-        "search_required": true,
-        "kb_title_any": [
-          "last dance"
-        ],
-        "coverage_in": [
-          "full",
-          "partial"
-        ],
-        "path_in": [
-          "single",
-          "draft_update"
-        ],
-        "answer_contains_all": [
-          "3-0",
-          "Benin"
-        ]
-      }
-    },
-    {
-      "id": "messi-farewell-typo",
-      "question": "mesi farewel match benin score",
-      "expect": {
-        "kb_title_any": [
-          "last dance"
-        ]
-      }
-    },
-    {
-      "id": "messi-farewell-followup",
-      "question": "What was the score?",
-      "history": [
-        {
-          "role": "user",
-          "content": "Did Messi play a farewell match for Argentina?"
-        },
-        {
-          "role": "model",
-          "content": "He did - on October 6, 2026 Messi played his farewell friendly for Argentina against Benin in Buenos Aires, and even scored a penalty."
-        }
-      ],
-      "answer": true,
-      "expect": {
-        "kb_title_any": [
-          "last dance"
-        ],
-        "answer_contains_all": [
-          "3-0"
-        ],
-        "answer_excludes": [
-          "no farewell",
-          "world cup final was his last",
-          "whisper in the wind"
-        ],
-        "query_includes": [
-          "Messi"
-        ]
-      },
-      "notes": "Pronoun follow-up: the classifier has to resolve 'the score' to Messi's farewell match, and the answer must not contradict the earlier turn."
-    },
-    {
-      "id": "messi-recent",
-      "question": "messi recent performance",
-      "expect": {
-        "search_required": true,
-        "latest_news": true,
-        "kb_title_any": [
-          "last dance",
-          "farewell"
-        ]
-      }
-    },
-    {
-      "id": "fleetwood-arsenal",
-      "question": "How did Fleetwood knock Arsenal out of the Carabao Cup?",
-      "answer": true,
-      "expect": {
-        "kb_title_any": [
-          "Fleetwood"
-        ],
-        "coverage_in": [
-          "full",
-          "partial"
-        ],
-        "answer_contains_all": [
-          "Fleetwood"
-        ],
-        "answer_contains_any": [
-          "penalt",
-          "shootout"
-        ],
-        "query_includes": [
-          "Fleetwood"
-        ],
-        "query_excludes": [
-          "2023",
-          "2024",
-          "2025-26"
-        ]
-      }
-    },
     {
       "id": "arsenal-latest",
       "question": "latest Arsenal news",
@@ -125,7 +31,22 @@
           "draft_update",
           "single"
         ]
-      }
+      },
+      "domain": "latest-news"
+    },
+    {
+      "id": "best-player-last-week",
+      "domain": "latest-news",
+      "question": "best player from the lastw eek",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "query_excludes": [
+          "NFL"
+        ]
+      },
+      "notes": "Generic wording with a typo; Bing News returned NFL stories for generic queries. Needs an Ask next block even when the update adds nothing."
     },
     {
       "id": "carrick-united",
@@ -147,7 +68,68 @@
           "Amorim"
         ]
       },
-      "notes": "Run of Play had 2- and 6-day-old Carrick crisis pieces; the classifier's rewrite once dropped 'Carrick', so the archive is also searched with the user's own words."
+      "notes": "Run of Play had 2- and 6-day-old Carrick crisis pieces; the classifier's rewrite once dropped 'Carrick', so the archive is also searched with the user's own words.",
+      "domain": "latest-news"
+    },
+    {
+      "id": "madrid-title-race",
+      "question": "What's next for Real Madrid in the title race?",
+      "expect": {
+        "search_required": true,
+        "coverage_in": [
+          "none"
+        ],
+        "path_in": [
+          "combined"
+        ]
+      },
+      "domain": "latest-news"
+    },
+    {
+      "id": "messi-recent",
+      "question": "messi recent performance",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "kb_title_any": [
+          "last dance",
+          "farewell"
+        ]
+      },
+      "domain": "latest-news"
+    },
+    {
+      "id": "premier-league-top",
+      "question": "Who's top of the Premier League?",
+      "expect": {
+        "search_required": true
+      },
+      "domain": "latest-news"
+    },
+    {
+      "id": "saliba-injury",
+      "domain": "latest-news",
+      "question": "Any injury news on Saliba?",
+      "expect": {
+        "search_required": true,
+        "latest_news": true,
+        "path_in": [
+          "combined",
+          "draft_update"
+        ]
+      },
+      "notes": "Run of Play has no Saliba article."
+    },
+    {
+      "id": "atletico-derby",
+      "domain": "match-results",
+      "question": "What happened in the Madrid derby in September?",
+      "expect": {
+        "kb_title_any": [
+          "Madrid derby",
+          "Atletico"
+        ]
+      }
     },
     {
       "id": "clasico-result",
@@ -178,20 +160,87 @@
           "Mbapp"
         ]
       },
-      "notes": "Run of Play only has pre-match pieces, so the draft used to lean on them before the web update contradicted it."
+      "notes": "Run of Play only has pre-match pieces, so the draft used to lean on them before the web update contradicted it.",
+      "domain": "match-results"
     },
     {
-      "id": "madrid-title-race",
-      "question": "What's next for Real Madrid in the title race?",
+      "id": "fleetwood-arsenal",
+      "question": "How did Fleetwood knock Arsenal out of the Carabao Cup?",
+      "answer": true,
+      "expect": {
+        "kb_title_any": [
+          "Fleetwood"
+        ],
+        "coverage_in": [
+          "full",
+          "partial"
+        ],
+        "answer_contains_all": [
+          "Fleetwood"
+        ],
+        "answer_contains_any": [
+          "penalt",
+          "shootout"
+        ],
+        "query_includes": [
+          "Fleetwood"
+        ],
+        "query_excludes": [
+          "2023",
+          "2024",
+          "2025-26"
+        ]
+      },
+      "domain": "match-results"
+    },
+    {
+      "id": "manchester-derby",
+      "domain": "match-results",
+      "question": "Who won the last Manchester derby?",
       "expect": {
         "search_required": true,
+        "kb_title_any": [
+          "Manchester City",
+          "derby"
+        ]
+      },
+      "notes": "Run of Play: 'Ten-Man Manchester City Stun Manchester United...' (2026-09-14)."
+    },
+    {
+      "id": "messi-farewell-score",
+      "question": "What was the score in Messi's farewell match for Argentina?",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "kb_title_any": [
+          "last dance"
+        ],
         "coverage_in": [
-          "none"
+          "full",
+          "partial"
         ],
         "path_in": [
-          "combined"
+          "single",
+          "draft_update"
+        ],
+        "answer_contains_all": [
+          "3-0",
+          "Benin"
         ]
-      }
+      },
+      "domain": "match-results"
+    },
+    {
+      "id": "ballon-dor-2015",
+      "question": "Who won the Ballon d'Or in 2015?",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      },
+      "domain": "awards"
     },
     {
       "id": "ballon-dor-latest",
@@ -207,18 +256,8 @@
           "Kane"
         ]
       },
-      "notes": "No year given, so it means the latest award (2026, Harry Kane)."
-    },
-    {
-      "id": "ballon-dor-2015",
-      "question": "Who won the Ballon d'Or in 2015?",
-      "expect": {
-        "search_required": false,
-        "latest_news": false,
-        "path_in": [
-          "single"
-        ]
-      }
+      "notes": "No year given, so it means the latest award (2026, Harry Kane).",
+      "domain": "awards"
     },
     {
       "id": "kane-ballon-why",
@@ -234,6 +273,82 @@
           "2023",
           "2024"
         ]
+      },
+      "domain": "awards"
+    },
+    {
+      "id": "womens-ballon-dor",
+      "domain": "awards",
+      "question": "Who won the women's Ballon d'Or?",
+      "expect": {
+        "search_required": true,
+        "path_in": [
+          "combined",
+          "draft_update"
+        ]
+      },
+      "notes": "Run of Play has no women's Ballon d'Or article, so it should never be answered from the archive alone."
+    },
+    {
+      "id": "emi-martinez",
+      "question": "Is Emi Martinez leaving Aston Villa for Barcelona?",
+      "expect": {
+        "kb_title_any": [
+          "Emi Martinez"
+        ]
+      },
+      "domain": "transfers"
+    },
+    {
+      "id": "trent-real-madrid",
+      "domain": "transfers",
+      "question": "How has Trent Alexander-Arnold's move to Real Madrid worked out?",
+      "expect": {
+        "kb_title_any": [
+          "Alexander-Arnold"
+        ],
+        "query_includes": [
+          "Alexander-Arnold"
+        ]
+      }
+    },
+    {
+      "id": "vinicius-staying",
+      "domain": "transfers",
+      "question": "Is Vinicius Junior staying at Real Madrid?",
+      "answer": true,
+      "expect": {
+        "search_required": true,
+        "kb_title_any": [
+          "Vini"
+        ],
+        "query_includes": [
+          "Vinicius"
+        ],
+        "answer_contains_any": [
+          "2032",
+          "extension",
+          "new contract"
+        ]
+      },
+      "notes": "Run of Play: 'Se Queda Vini' - contract extension until 2032 (2026-08-07)."
+    },
+    {
+      "id": "mbappe-real",
+      "question": "Mbappé's best games for Real Madrid",
+      "expect": {
+        "kb_title_any": [
+          "Mbapp"
+        ]
+      },
+      "domain": "history"
+    },
+    {
+      "id": "messi-career-goals",
+      "domain": "history",
+      "question": "How many Ballon d'Ors has Messi won?",
+      "expect": {
+        "latest_news": false
       }
     },
     {
@@ -249,23 +364,86 @@
         "answer_contains_all": [
           "Spain"
         ]
-      }
+      },
+      "domain": "history"
     },
     {
-      "id": "emi-martinez",
-      "question": "Is Emi Martinez leaving Aston Villa for Barcelona?",
+      "id": "world-cup-2014-final",
+      "domain": "history",
+      "question": "Who scored the winner in the 2014 World Cup final?",
+      "answer": true,
       "expect": {
-        "kb_title_any": [
-          "Emi Martinez"
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ],
+        "answer_contains_any": [
+          "Götze",
+          "Gotze",
+          "Goetze"
         ]
       }
     },
     {
-      "id": "mbappe-real",
-      "question": "Mbappé's best games for Real Madrid",
+      "id": "false-nine",
+      "domain": "rules-tactics",
+      "question": "What is a false nine?",
+      "answer": true,
       "expect": {
-        "kb_title_any": [
-          "Mbapp"
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ],
+        "answer_contains_any": [
+          "drop",
+          "deep",
+          "midfield"
+        ]
+      }
+    },
+    {
+      "id": "how-var-works",
+      "domain": "rules-tactics",
+      "question": "How does VAR decide whether to overturn a call?",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      }
+    },
+    {
+      "id": "offside-rule",
+      "question": "Explain the offside rule",
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ]
+      },
+      "domain": "rules-tactics"
+    },
+    {
+      "id": "fc26-custom-tactics",
+      "domain": "gaming",
+      "question": "Best custom tactics for a 4-3-3 in FC 26?",
+      "answer": true,
+      "expect": {
+        "search_required": false,
+        "latest_news": false,
+        "path_in": [
+          "single"
+        ],
+        "answer_contains_any": [
+          "width",
+          "depth",
+          "build-up",
+          "build up",
+          "defensive"
         ]
       }
     },
@@ -279,11 +457,13 @@
           "single"
         ]
       },
-      "notes": "Video-game tactics: evergreen even though it names current players."
+      "notes": "Video-game tactics: evergreen even though it names current players.",
+      "domain": "gaming"
     },
     {
-      "id": "offside-rule",
-      "question": "Explain the offside rule",
+      "id": "ut-chemistry",
+      "domain": "gaming",
+      "question": "Any tips for building chemistry in Ultimate Team?",
       "expect": {
         "search_required": false,
         "latest_news": false,
@@ -293,19 +473,136 @@
       }
     },
     {
-      "id": "premier-league-top",
-      "question": "Who's top of the Premier League?",
+      "id": "farewell-consistency",
+      "domain": "conversation",
+      "question": "So the World Cup final was his last game for Argentina?",
+      "answer": true,
+      "history": [
+        {
+          "role": "user",
+          "content": "Did Messi play a farewell match for Argentina?"
+        },
+        {
+          "role": "model",
+          "content": "He did - on October 6, 2026 Messi played his farewell friendly for Argentina against Benin in Buenos Aires, a 3-0 win, and scored a penalty."
+        }
+      ],
       "expect": {
-        "search_required": true
+        "answer_contains_any": [
+          "Benin",
+          "farewell"
+        ],
+        "answer_excludes": [
+          "yes, the world cup final was his last"
+        ]
+      },
+      "notes": "Must correct the user, not agree: the Benin friendly came after the World Cup final."
+    },
+    {
+      "id": "fleetwood-followup",
+      "domain": "conversation",
+      "question": "Who scored their goal?",
+      "answer": true,
+      "history": [
+        {
+          "role": "user",
+          "content": "How did Fleetwood do against Arsenal?"
+        },
+        {
+          "role": "model",
+          "content": "Fleetwood pulled off a proper giant-killing - they knocked Arsenal out of the Carabao Cup on penalties after a 1-1 draw."
+        }
+      ],
+      "expect": {
+        "query_includes": [
+          "Fleetwood"
+        ],
+        "kb_title_any": [
+          "Fleetwood"
+        ],
+        "answer_contains_any": [
+          "Loupalo"
+        ]
+      },
+      "notes": "'their' = Fleetwood: Aaron Loupalo-Bi scored."
+    },
+    {
+      "id": "messi-farewell-followup",
+      "question": "What was the score?",
+      "history": [
+        {
+          "role": "user",
+          "content": "Did Messi play a farewell match for Argentina?"
+        },
+        {
+          "role": "model",
+          "content": "He did - on October 6, 2026 Messi played his farewell friendly for Argentina against Benin in Buenos Aires, and even scored a penalty."
+        }
+      ],
+      "answer": true,
+      "expect": {
+        "kb_title_any": [
+          "last dance"
+        ],
+        "answer_contains_all": [
+          "3-0"
+        ],
+        "answer_excludes": [
+          "no farewell",
+          "world cup final was his last",
+          "whisper in the wind"
+        ],
+        "query_includes": [
+          "farewell"
+        ]
+      },
+      "notes": "Pronoun follow-up: the classifier has to resolve 'the score' to Messi's farewell match, and the answer must not contradict the earlier turn. The query must carry the resolved subject ('Argentina farewell match' does; 'Messi' isn't required).",
+      "domain": "conversation"
+    },
+    {
+      "id": "other-good-performances",
+      "domain": "conversation",
+      "question": "any other good performance?",
+      "answer": true,
+      "history": [
+        {
+          "role": "user",
+          "content": "best player from the last week"
+        },
+        {
+          "role": "model",
+          "content": "Mathys Tel had his moment in the sun, sealing Tottenham's 2-0 derby win over Chelsea with a brilliant individual finish - a goal that helped lift Spurs from the Premier League basement to 12th."
+        }
+      ],
+      "expect": {
+        "search_required": true,
+        "answer_excludes": [
+          "Bo Nix",
+          "Denver",
+          "Esposito"
+        ]
+      },
+      "notes": "The answer once filled itself with American football (Denver QB Bo Nix, a high-school hat-trick) from generic web results."
+    },
+    {
+      "id": "fleetwood-typo",
+      "domain": "robustness",
+      "question": "arsnal carabao cup fleetwod",
+      "expect": {
+        "kb_title_any": [
+          "Fleetwood"
+        ]
       }
     },
     {
-      "id": "yamal-doing",
-      "question": "what is my homeboy yamal doing",
+      "id": "messi-farewell-typo",
+      "question": "mesi farewel match benin score",
       "expect": {
-        "search_required": true,
-        "latest_news": true
-      }
+        "kb_title_any": [
+          "last dance"
+        ]
+      },
+      "domain": "robustness"
     },
     {
       "id": "small-talk",
@@ -315,7 +612,29 @@
         "path_in": [
           "single"
         ]
+      },
+      "domain": "robustness"
+    },
+    {
+      "id": "united-slang",
+      "domain": "robustness",
+      "question": "yo whats good with united n carrick rn",
+      "expect": {
+        "latest_news": true,
+        "kb_title_any": [
+          "Carrick",
+          "Manchester United"
+        ]
       }
+    },
+    {
+      "id": "yamal-doing",
+      "question": "what is my homeboy yamal doing",
+      "expect": {
+        "search_required": true,
+        "latest_news": true
+      },
+      "domain": "robustness"
     }
   ]
 }

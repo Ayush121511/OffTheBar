@@ -17,6 +17,8 @@ error_messages = [
 ]
 
 import re
+import time
+import unicodedata
 import requests
 import urllib.robotparser
 from urllib.parse import urlparse
@@ -107,9 +109,27 @@ RELEVANCE_STOPWORDS = {
 }
 
 
+# Bing News treats "football" as American football for generic queries ("best
+# performance last week" returned NFL and high-school stories, which reached
+# an answer). Results whose headline or snippet carries these are dropped.
+# Not "sack"/"interception" - those are association football words too.
+AMERICAN_FOOTBALL = re.compile(
+    r"\b(?:nfl|ncaa|quarterbacks?|qbs?|touchdowns?|super bowl|gridiron|american football|college football|"
+    r"high school|varsity|wide receivers?|running backs?|linebackers?|field goals?|rushing yards|passing yards)\b",
+    re.I,
+)
+
+
+def _is_american_football(result):
+    return bool(AMERICAN_FOOTBALL.search(f"{result.get('title', '')} {result.get('content', '')}"))
+
+
 def _word_tokens(text):
-    """Lowercase words of 3+ characters, as a set."""
-    return {t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(t) > 2}
+    """Lowercase, accent-folded words of 3+ characters, as a set. Without the
+    folding, "Clásico" became "sico" and "Mbappé" "mbapp", so results spelled
+    "Clasico"/"Mbappe" shared no words with the query and were dropped."""
+    folded = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    return {t for t in re.findall(r"[a-z0-9]+", folded) if len(t) > 2}
 
 
 # "Latest news" questions only get articles published within this many days;
@@ -124,6 +144,8 @@ LATEST_NEWS_MARKERS = [
     "doing", "lately", "these days", "at the moment", "form", "this season", "so far",
     # what happens next depends on where things stand now
     "what's next", "whats next", "next match", "next game", "upcoming", "title race", "standings",
+    # slang for the same ("yo whats good with united rn")
+    "rn", "what's good", "whats good", "what's happening", "whats happening",
 ]
 
 
@@ -192,8 +214,12 @@ def _published_label(result):
 KB_TOP_K = 4
 
 # Web results per answer: scraped in full, then headline + snippet only.
+# Scraping stops after WEB_SCRAPE_ATTEMPTS pages either way: with MSN, NYT and
+# others blocking the scraper, trying every result until two succeeded took
+# the combined Clásico answer 50s to its first words.
 WEB_SCRAPED_SOURCES = 2
 WEB_SNIPPET_SOURCES = 4
+WEB_SCRAPE_ATTEMPTS = 3
 
 
 def _days_ago(age):
@@ -287,10 +313,16 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
             # results for "Messi performance" were months or a year old.
             params["time_range"] = "month"
 
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-
-        results = response.json()
+        # Bing News occasionally answers a query with nothing and then with 10
+        # results a second later, so an empty answer gets one retry.
+        for attempt in range(2):
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            results = response.json()
+            if results.get("results") or attempt:
+                break
+            print("Search returned no results; retrying once.")
+            time.sleep(1)
     except Exception as e:
         print(f"Error: {e}")
     print("Search results:", len(results.get("results", [])))
@@ -333,7 +365,10 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     # No fallback to the unfiltered list: when nothing is relevant, those
     # results are exactly the junk this filter exists to keep out (adult
     # sites, observed 2026-10), so the answer gets no web context instead.
-    candidate_results = [r for r in results.get("results", []) if _is_relevant(r)]
+    other_sport = [r for r in results.get("results", []) if _is_american_football(r)]
+    for res in other_sport:
+        print(f"Dropping {res['url']} - American football")
+    candidate_results = [r for r in results.get("results", []) if _is_relevant(r) and not _is_american_football(r)]
     if not candidate_results:
         print("Relevance filter matched nothing; using no web context.")
         _log_query("web_search_no_relevant_results", formatted_query)
@@ -363,10 +398,12 @@ def build_news_context(query, formatted_query, fallback_context=None, search_req
     # scrape no longer leaves the answer with nothing.
     prompt_context = []
     snippet_only = []
+    attempts = 0
     for ctx in candidate_results:
-        if len(prompt_context) >= WEB_SCRAPED_SOURCES:
+        if len(prompt_context) >= WEB_SCRAPED_SOURCES or attempts >= WEB_SCRAPE_ATTEMPTS:
             snippet_only.append(ctx)
             continue
+        attempts += 1
         scrape_premission = is_scraping_allowed(ctx["url"])
         if scrape_premission[0] == False:
             print(f"Skipping {ctx['url']} - scraping not allowed by robots.txt")

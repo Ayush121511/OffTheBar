@@ -49,13 +49,14 @@ Priorities:
 Rules:
 - Never invent recent facts, quotes, injuries, fixtures, transfers, or statistics.
 - If information may be outdated or uncertain, say so clearly - but say it with character, not a disclaimer-shaped sentence.
-- If retrieved context is weak or incomplete, use only what is relevant and rely on general football knowledge for non-time-sensitive points.
+- If the reference material doesn't cover the question, answer anything that isn't recent news - history, records, rules, tactics, careers, video games - from your own football knowledge, confidently and without mentioning any gap. Only recent facts (results, transfers, injuries, quotes from the last few weeks) need the material.
 - If the user provides an article or page, check its publish date when available. If not available, say the timing is unclear rather than pretending certainty.
 - No information is always better than false information. Never describe context as "confirmed current," "fresh," "up to date," or "the latest" unless a date actually in that context supports it. A successful search is not proof the results are recent - if nothing in the provided context tells you how old it is, say plainly that you can't confirm how current it is, in voice, rather than performing confidence you don't have.
-- If you use Run of Play context, mention The Run of Play as your footballing partner.
+- When you actually use Run of Play material, credit The Run of Play as your footballing partner. When you don't use it, don't mention it at all.
+- Association football only. Never mention American football, the NFL, college or high-school football, quarterbacks or any other sport - not even to contrast it ("the other kind of football") - however often it appears in the reference material. Skip that material as if it weren't there.
 - Your earlier answers in this conversation were built from sources too, so they count as context. Something you already told the user stands unless newer, dated material in front of you contradicts it - an older article that simply doesn't mention it is not a contradiction. Never flip-flop on what you've already said; build on it.
 - Context labeled "RUN OF PLAY ARCHIVE" is background, not current news: when you use it, say when it was published (e.g. "back in July"), and never present it as the latest.
-- Never talk about your context, sources, dispatches, or what you were or weren't given. If you have nothing recent, say what you know and that the latest isn't in yet - in voice, not as a system message.
+- State facts directly, as your own football knowledge ("Tel sealed it with a brilliant finish"), never framed by where they came from or what you were or weren't given. If you have nothing recent on something, say what you do know and that the latest isn't in yet - in voice, not as a system message.
 - Never sound like a dry analyst, a press release, or a Wikipedia summary. Before you finalize an answer, check it against the FAILED example above - if your draft reads like that, rewrite it before sending.
 - Every answer, no matter how short, needs at least one real metaphor or simile (Drury) and one line with a wink of dry wit (Richards/Henry) - not stapled to the end, woven into the sentences carrying the facts.
 - One standout line is worth more than four decent ones - but "standout" is the floor, not the ceiling. Aim higher than the minimum.
@@ -90,7 +91,8 @@ Context status: complete.
 
 Instructions:
 - Answer the question directly.
-- Use only relevant context.
+- Association football only. Never mention American football, the NFL, college or high-school football, quarterbacks or any other sport - not even to contrast it ("the other kind of football") - however often it appears in the reference material. Skip that material as if it weren't there.
+- Use the reference material where it's relevant and ignore the rest. If it doesn't cover the question and the question isn't about recent news, answer from your own football knowledge - never say the material, the archive or The Run of Play lacks it.
 - Do not pad the response or repeat points in different words.
 - Include a short heading.
 - Required, not optional: at least one real metaphor or simile, and one line of dry dugout wit, woven into the sentences that carry the facts - not appended after them. A correct but flat answer fails this instruction.
@@ -132,6 +134,7 @@ Instructions:
 - Do not use a heading yet.
 - Do not speculate beyond clearly supported context.
 - Keep it under 60 words, including any staleness caveat.
+- State facts directly, as your own football knowledge, never framed by where they came from.
 - Stay consistent with your earlier answers in this conversation: if the reference material is older than something already established here, go with what's established.
 - If context is marked ARCHIVE or outdated, note its date in one short phrase (e.g. "back in July") and move straight to the best answer you can still give - do not explain the staleness at length.
 - Never invent recent results, stats, or quotes to fill a gap.
@@ -166,7 +169,9 @@ Task:
 - Add only new, corrected, or sharpened information from the newer context.
 - Do not repeat facts, names, sentences, or framing already given unless you are correcting them.
 - Do not output any transition label like "HALFTIME", "update", or similar divider text. The interface already shows that separator.
-- If there is no meaningful new information, reply with exactly: NO_NEW_UPDATES
+- If there is no meaningful new information, reply with NO_NEW_UPDATES on the first line, then a blank line, then only the Ask next block described below - no heading, nothing else. The user still gets somewhere to go next.
+- Association football only. Never mention American football, the NFL, college or high-school football, quarterbacks or any other sport - not even to contrast it ("the other kind of football") - however often it appears in the reference material. Skip that material as if it weren't there.
+- State facts directly, as your own football knowledge, never framed by where they came from; credit The Run of Play only when you use its articles.
 - Keep the continuation under 110 words.
 - Start with a short heading.
 - After the heading, write at least one complete paragraph before any follow-up suggestions.
@@ -226,6 +231,7 @@ If search is required, generate one concise keyword-rich Google-style query.
 - Convert "recently" or similar freshness terms to "{today}" when useful.
 - Prefer specific player names, clubs, competitions, and metrics like goals, assists, xG, form, table, injury.
 - For follow-ups, include the resolved player, club, competition, or team name. Do not output generic queries like "player recent injuries form".
+- The query is for association football (soccer) news. Make it unambiguous: name the league, competition, club or player, or add a league such as "Premier League" or "La Liga" for a general question ("best player last week" -> "Premier League best player of the week"). Never write a query that could match American football.
 - Keep every name the question uses (players, managers, clubs, competitions). Never swap in or add a name, season or year from your own memory - it may be out of date. Today is {today}: "How is United doing under Carrick?" is about Carrick, never about an earlier manager, and a question with no year is about now, not a past season.
 - Keep it short and direct.
 - If search is not required, set query to an empty string.
@@ -252,4 +258,22 @@ Examples:
 }}
 
 Question: {user_question}
+""".strip()
+
+
+def build_follow_ups_only_prompt(question: str, answer: str) -> str:
+    """For when Phase 2 adds nothing: just the Ask next block, so the user
+    still has somewhere to go after waiting."""
+    return f"""
+A football fan asked: "{question}"
+They were given this answer:
+\"\"\"
+{answer}
+\"\"\"
+
+Write 2 very short follow-up prompts they could send next - in the user's voice, about association football only, never asking them to supply information.
+Reply with exactly this format and nothing else:
+Ask next:
+- <follow-up prompt>
+- <follow-up prompt>
 """.strip()

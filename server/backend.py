@@ -18,6 +18,7 @@ from prompt_templates import (
     build_chat_system_prompt,
     build_complete_context_instruction,
     build_first_draft_instruction,
+    build_follow_ups_only_prompt,
     build_refinement_prompt,
 )
 from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage
@@ -288,7 +289,9 @@ class Backend_Api:
                             contents=convo,
                             config=genai_types.GenerateContentConfig(
                                 system_instruction=system_message,
-                                max_output_tokens=2100,
+                                # Thinking tokens count against this cap: at 2100, long tactical
+                                # answers were cut off before their Ask next block.
+                                max_output_tokens=6000,
                                 temperature=0.5,
                                 top_p=0.5,
                                 safety_settings=GEMINI_SAFETY_SETTINGS,
@@ -374,7 +377,9 @@ class Backend_Api:
                             contents=user_prompt["content"],
                             config=genai_types.GenerateContentConfig(
                                 system_instruction=system_message,
-                                max_output_tokens=2400,
+                                # Thinking counts against this too: at 2400 an update was cut off
+                                # mid-sentence, before its Ask next block.
+                                max_output_tokens=6000,
                                 temperature=0.4,
                                 top_p=0.6,
                                 safety_settings=GEMINI_SAFETY_SETTINGS,
@@ -553,13 +558,32 @@ class Backend_Api:
                             yield chunk
                         except Exception as exc:
                             print(chunk)
-                    # Nothing new (NO_NEW_UPDATES or empty text) or no new
-                    # context: the answer just ends on the Phase 1 draft - the
-                    # clients drop the status line, so nothing is left hanging.
+                    # NO_NEW_UPDATES now comes with an Ask next block; if even
+                    # that's missing, the user still gets follow-up suggestions.
                     if not yielded_any:
-                        print("Phase 2 yielded nothing (no new updates) - ending on the Phase 1 draft.")
+                        print("Phase 2 yielded nothing - adding follow-up suggestions to the draft.")
+                        yield from follow_ups_only(prompt["content"], initial_response)
                 else:
-                    print("Phase 2 found no new context - ending on the Phase 1 draft.")
+                    print("Phase 2 found no new context - adding follow-up suggestions to the draft.")
+                    yield from follow_ups_only(prompt["content"], initial_response)
+
+            def follow_ups_only(question: str, answer: str) -> Iterable[bytes]:
+                """An Ask next block (flash-lite) for a draft that Phase 2
+                couldn't add to - so the wait still ends somewhere useful."""
+                try:
+                    response = call_gemini_with_key_retry(
+                        "gemini-2.5-flash-lite",
+                        lambda client: client.models.generate_content(
+                            model="gemini-2.5-flash-lite",
+                            contents=build_follow_ups_only_prompt(question, answer),
+                        ),
+                    )
+                    block = (response.text or "").strip()
+                except Exception as exc:
+                    print(f"Follow-up suggestions failed: {exc}")
+                    return
+                if block.lower().startswith("ask next"):
+                    yield ("\n\n" + block).encode("utf-8")
 
             def generate_two_phase() -> Iterable[bytes]:
                 """Wraps stream_fast_gemini() to save the full transcript once it ends."""
