@@ -139,6 +139,11 @@
     // Bursts of ~80 characters, like Gemini's real stream, so the page's
     // word-by-word reveal is what makes it look smooth.
     const bursts = (text) => text.match(/[\s\S]{1,80}(\s|$)/g) || [];
+    if (/mock-cut-off/i.test(question)) {
+      const parts = ['Mock draft that loses its connection.\n\n', '## HALFTIME!!! Searching the web\n\n'];
+      const cut = new ReadableStream({ start(c) { parts.forEach((p) => c.enqueue(encoder.encode(p))); setTimeout(() => c.close(), 400); } });
+      return Promise.resolve(new Response(cut, { status: 200 }));
+    }
     const status = (text) => `## HALFTIME!!! ${text}\n\n`;
     const script = [[0, status('Searching The Run of Play')], [1800, status('Generating')], [900, '']];
     bursts(phase1).forEach((b) => script.push([150, b]));

@@ -10,13 +10,14 @@ Project `runofplay` (number `607277832880`), region `asia-south1`.
 
 | Resource | What it is | State |
 |---|---|---|
-| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00010-4th` (deployed 2026-10-31), 100% traffic. Public (`allUsers` invoker). `--max-instances 2`, no minimum instances: the chat pages wake it with `GET /api/warm` on load. |
+| `offthebar-api` (service) | this Flask backend | Live. Revision `offthebar-api-00012-knf` (deployed 2026-10-31), 100% traffic. Public (`allUsers` invoker). `--max-instances 2`, no minimum instances: the chat pages wake it with `GET /api/warm` on load. |
 | `offthebar-football-data` (job) | `python football_data.py` on the same image | Every 6 hours, Cloud Scheduler job `offthebar-football-data-6h`. See step 7. |
 | `offthebar-ingest-kb` (job) | `python ingest_kb.py` on the same image | Healthy since 2026-10-31, on the same image as `offthebar-api`. Failed every run from 2026-10-08 to 2026-10-30 (Hugging Face `402 Payment Required`; embeddings are now computed locally). Reads and writes the knowledge store in Cloud Storage. |
 | `offthebar-ingest-kb-daily` (Cloud Scheduler) | triggers the job at `0 4 * * *` UTC | Enabled. |
 | `searxng-docker` (service) | web search backend | Live. Request-based billing (CPU only during requests), 1 vCPU / 512Mi, scales to zero. |
 | `runofplay-offthebar-kb` (Cloud Storage bucket) | the knowledge store `kb_store.json.gz` (step 6) | Created 2026-10-30, private, asia-south1. |
 | `searxng-keep-warm` (Cloud Scheduler) | `GET /robots.txt` on `searxng-docker` every 10 min | Enabled 2026-10-30 (step 5). |
+| `offthebar-api-keep-warm` (Cloud Scheduler) | `GET /api/warm` on `offthebar-api` every 10 min | Enabled 2026-11-07 (step 5b). |
 | `searx-proxy` | legacy Gen2 Cloud Function `searx_proxy` | Still ACTIVE, unused by this code. Candidate for deletion. |
 
 API URL: `https://offthebar-api-607277832880.asia-south1.run.app/api/chat`
@@ -220,6 +221,32 @@ disabled), and `searxng-docker` uses request-based billing, so an idle warm
 instance isn't charged - only the ~4,300 pings a month, a few milliseconds
 each, inside Cloud Run's free tier. Cloud Run doesn't promise to keep an idle
 instance, so a cold start can still happen now and then.
+
+### 5b. Keep `offthebar-api` warm
+
+The chat pages call `GET /api/warm` on load, but a cold `offthebar-api` takes
+21-25s to get ready (logs 2026-11-04 to 11-07): ~1s to start the container,
+~12s importing Python libraries (Chromium crawler, embedding model, Gemini,
+Pinecone) before Flask can take a request, then the keyword index and
+connections. A question sent in that time waited: on 2026-11-06 the `OPTIONS`
+for a question took 12.6s and the answer 8.8s more, against ~5-6s warm.
+`--cpu-boost` was already on. Since 2026-11-07 a ping every 10 minutes keeps an
+instance up:
+
+```bash
+gcloud scheduler jobs create http offthebar-api-keep-warm \
+  --project runofplay --location asia-south1 \
+  --schedule "*/10 * * * *" --time-zone UTC \
+  --uri "https://offthebar-api-607277832880.asia-south1.run.app/api/warm" \
+  --http-method GET --attempt-deadline 60s
+```
+
+A warm `/api/warm` answers in ~3ms. Cost: $0.10/month (about Rs 9) for the
+Scheduler job - the billing account's 4th, and only 3 are free. Cloud Run: $0,
+since the service uses request-based billing (an idle warm instance isn't
+charged) and ~4,300 pings a month at the 100ms minimum are under 1% of the
+free tier. `--min-instances 1` would cost about Rs 1,700/month. Cloud Run still
+replaces instances now and then, so an occasional cold start can happen.
 
 ## Known limitation carried over from local dev
 

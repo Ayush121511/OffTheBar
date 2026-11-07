@@ -1,0 +1,350 @@
+.chat-send{
+  height: 40px;
+  min-width: 110px;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  color: #0f172a;
+  box-shadow: 0 6px 16px rgba(15,23,42,.06);
+  transition: transform .12s, box-shadow .16s, opacity .12s;
+}
+.chat-send:hover{ transform: translateY(-1px); }
+.chat-send:disabled{ opacity:.65; cursor:not-allowed; }
+
+.shadow-strong {
+  display: inline-block;   /* keeps box sized to its content */
+  background: #fff;        /* so the shadow has a visible edge */
+  border-radius: 8px;      /* rounded corners */
+  box-shadow:
+    rgba(0, 0, 0, 0.08) 0px 2px 4px,                 /* light, close shadow */
+    rgba(0, 0, 0, 0.12) 0px 6px 12px,                /* medium shadow */
+    rgba(50, 50, 93, 0.25) 0px 30px 60px -20px,      /* deeper blur */
+    rgba(0, 0, 0, 0.3) 0px 50px 100px -30px;         /* far shadow */
+}
+
+html, body { height: 100svh; overflow: hidden; margin: 0; }
+
+/* Apply this class to your Page or Main container */
+.page-scale {
+  position: relative;
+  width: 1080px;
+  min-height: 2800px;
+  margin: 0 auto;
+  transform-origin: top center;
+  transform: scale(
+    min(
+      1,                    /* never scale up */
+      calc(100vw / 1080px), /* fit width */
+      calc(100svh / 2800px) /* fit height */
+    )
+  );
+}
+
+/* Fancy Box: default black, gradient slides in on hover/click */
+.fancyBox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: inherit;
+  letter-spacing: 0.05em;
+
+  color: ghostwhite;              /* text always white */
+  background: #000;               /* default = black */
+  border: none;
+  border-radius: 0.8em;
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  transition: transform 0.2s ease;
+  z-index: 0;
+}
+
+/* Gradient overlay that slides in BEHIND text */
+.fancyBox::before {
+  content: "";
+  position: absolute;
+  top: 0; left: -10%;
+  width: 120%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(to right, #8e2de2, #4a00e0);
+  transform: translate3d(100%, 0, 0) skew(30deg);  /* start hidden */
+  transition: transform 0.4s cubic-bezier(0.3, 1, 0.8, 1);
+  will-change: transform;
+  z-index: -1;   /* keeps overlay behind the content */
+}
+
+/* Hover: slide gradient IN smoothly */
+.fancyBox:hover::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+
+/* Active: gradient visible + press-down */
+.fancyBox:active::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+.fancyBox:active {
+  transform: scale(0.95);
+}
+
+/* Text/icons always visible above overlay */
+.fancyBox span,
+.fancyBox p,
+.fancyBox svg {
+  position: relative;
+  z-index: 1;   /* ensures text is above overlay */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: ghostwhite !important;   /* force white text */
+}
+
+/* Gradient by default; black slides in on hover */
+.fancyBox-gradient-reverse {
+  position: relative;
+  display: flex;                 /* keeps text centered, but no auto size */
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: inherit;            /* no forced font size */
+  letter-spacing: inherit;
+  border: none;
+  border-radius: 0.8em;
+  color: ghostwhite;
+  background: linear-gradient(to right, #8e2de2, #4a00e0);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.2s ease;
+  user-select: none;
+  z-index: 0;
+}
+
+.fancyBox-gradient-reverse::before {
+  content: "";
+  position: absolute;
+  top: 0; left: -10%;
+  width: 120%;
+  height: 100%;
+  background: #000;                     /* black overlay */
+  border-radius: inherit;
+  transform: translate3d(100%, 0, 0) skew(30deg);
+  transition: transform 0.4s cubic-bezier(0.3, 1, 0.8, 1);
+  will-change: transform;
+  z-index: 0;
+}
+
+/* Hover: slide the black overlay IN smoothly */
+.fancyBox-gradient-reverse:hover::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+
+/* Active: keep black visible + press effect */
+.fancyBox-gradient-reverse:active::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+.fancyBox-gradient-reverse:active {
+  transform: scale(0.95);
+}
+
+/* Text/icons stay above overlay */
+.fancyBox-gradient-reverse span,
+.fancyBox-gradient-reverse p,
+.fancyBox-gradient-reverse svg {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  color: ghostwhite;
+  font-size: inherit;             /* respects whatever you set in editor */
+}
+
+/* Circular gradient button; black slides in on hover */
+.fancyCircle-gradient-reverse {
+  position: relative;
+  display: flex;                  /* center content */
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-weight: 500;               /* medium bold text */
+  font-size: inherit;             /* size controlled in Wix */
+  letter-spacing: 0.05em;
+  border: none;
+  border-radius: 50%;             /* makes it circular */
+  color: ghostwhite;
+  background: linear-gradient(to right, #8e2de2, #4a00e0);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.2s ease;
+  user-select: none;
+  z-index: 0;
+}
+
+.fancyCircle-gradient-reverse::before {
+  content: "";
+  position: absolute;
+  /* Wider than the circle and square: skewed, a 120%-wide circle left the
+     corners uncovered. The button's own rounding clips it to a circle. */
+  top: 0; left: -50%;
+  width: 200%;
+  height: 100%;
+  background: #000;                     /* black overlay */
+  transform: translate3d(100%, 0, 0) skew(30deg);
+  transition: transform 0.4s cubic-bezier(0.3, 1, 0.8, 1);
+  will-change: transform;
+  z-index: 0;
+}
+
+/* Hover: black slides in smoothly */
+.fancyCircle-gradient-reverse:hover::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+
+/* Active: keep black visible + press effect */
+.fancyCircle-gradient-reverse:active::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+.fancyCircle-gradient-reverse:active {
+  transform: scale(0.95);
+}
+
+/* Inner content (text/icon) */
+.fancyCircle-gradient-reverse span,
+.fancyCircle-gradient-reverse p,
+.fancyCircle-gradient-reverse svg {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  color: ghostwhite;
+  font-size: inherit;
+}
+
+/* Fancy Circle: default black, gradient slides in on hover/click.
+   Used for the send button: put a transparent white arrow (send-arrow.svg)
+   inside it, not an image with its own background, or the slide is hidden. */
+.fancyCircle {
+  position: relative;
+  display: flex;                  /* center content */
+  align-items: center;
+  justify-content: center;
+
+  /* Text inherits from Wix */
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+
+  color: ghostwhite;
+  background: #000;               /* default = black */
+  border: none;
+  border-radius: 50%;             /* circular */
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  transition: transform 0.2s ease;
+  z-index: 0;                     /* stacking context */
+}
+
+/* Gradient overlay that slides in */
+.fancyCircle::before {
+  content: "";
+  position: absolute;
+  /* Wider than the circle and square: skewed, a 120%-wide circle left the
+     corners uncovered. The button's own rounding clips it to a circle. */
+  top: 0; left: -50%;
+  width: 200%;
+  height: 100%;
+  background: linear-gradient(to right, #8e2de2, #4a00e0);
+  transform: translate3d(100%, 0, 0) skew(30deg);  /* start hidden */
+  transition: transform 0.4s cubic-bezier(0.3, 1, 0.8, 1);
+  will-change: transform;
+  z-index: 0;
+}
+
+/* Hover: slide gradient IN smoothly */
+.fancyCircle:hover::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+
+/* Active: keep gradient + press-down */
+.fancyCircle:active::before {
+  transform: translate3d(0, 0, 0) skew(30deg);
+}
+.fancyCircle:active {
+  transform: scale(0.95);
+}
+
+/* Inner content always above overlay */
+.fancyCircle span,
+.fancyCircle p,
+.fancyCircle svg {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: ghostwhite;
+  font-size: inherit;
+}
+
+/* Send arrow: nudges forward on hover. Size and position come from the editor:
+   Wix wraps the icon in a box that fills the circle, so sizing the svg here
+   shrinks it into that box's top-left corner on the live site. */
+.fancyCircle svg {
+  transition: transform 0.2s ease;
+}
+.fancyCircle:hover svg {
+  transform: translateX(2px);
+}
+
+/* Ensure hover works even when hovering over children */
+.fancyCircle > * {
+  pointer-events: none;
+}
+
+/* Keyboard focus: same purple ring as the chat input */
+.fancyBox:focus-visible,
+.fancyBox-gradient-reverse:focus-visible,
+.fancyCircle:focus-visible,
+.fancyCircle-gradient-reverse:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(199, 75, 249, 0.40);
+}
+
+/* Disabled (empty input, or an answer streaming): grey, no slide */
+.fancyCircle:disabled,
+.fancyCircle[aria-disabled="true"] {
+  background: #c7c9d1;
+  cursor: not-allowed;
+}
+.fancyCircle:disabled::before,
+.fancyCircle[aria-disabled="true"]::before {
+  display: none;
+}
+
+/* Honour reduced-motion settings for all the slide effects */
+@media (prefers-reduced-motion: reduce) {
+  .fancyBox::before,
+  .fancyBox-gradient-reverse::before,
+  .fancyCircle::before,
+  .fancyCircle-gradient-reverse::before,
+  .fancyCircle svg {
+    transition: none;
+  }
+}
+
+.tinybar .horizontal-menu__item-label,
+.tinybar .vertical-menu__item-label,
+.tinybar .anchor-menu__label,
+.tinybar .horizontal-menu__submenu-title-label,
+.tinybar .horizontal-menu__submenu-item-label {
+  font-size: calc(1em - 2pt);
+}
+
+.vector-image {
+  /* To learn more about CSS classes, visit https://wix.to/bnrepmb. Write your CSS here: */
+}

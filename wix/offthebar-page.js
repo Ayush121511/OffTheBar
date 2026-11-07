@@ -24,6 +24,7 @@ const DEFAULT_STATUS = 'Generating';
 // Cloud Run's answer when every instance is full (--max-instances, see CLOUDRUN.md).
 const BUSY_STATUSES = [429, 503];
 const BUSY_MESSAGE = "*The dugout's packed right now. Give it a moment and ask again.*";
+const CUT_OFF_MESSAGE = '*The connection dropped before the rest arrived. Ask again for the full answer.*';
 
 // Full answers end with an "Ask next:" line and a short list of follow-up
 // prompts (the backend's prompt asks for exactly that). They're cut from the
@@ -391,9 +392,15 @@ function revealTick() {
 // (which passes showFollowUps=false - a stopped answer's list may be cut off).
 function finishBot(fallbackMarkdown, showFollowUps = true) {
   stopReveal();
-  const rawText = normalizeEscapes(lastStreamText);
+  const streamed = normalizeEscapes(lastStreamText);
+  // Ending on a status line means the rest never came. Left in place, its
+  // counter would tick on forever with the answer looking stuck.
+  const cutOff = showFollowUps && !!currentStatus(streamed);
+  if (cutOff) console.error('Stream ended on a status line', streamed.length);
+  const rawText = streamed.replace(HALFTIME_LINES, '');
   const finalText = stripHalftime(rawText);
-  const html = finalText ? renderBot(rawText, showFollowUps) : md(fallbackMarkdown);
+  const shown = cutOff ? `${rawText.trimEnd()}\n\n${CUT_OFF_MESSAGE}` : rawText;
+  const html = finalText ? renderBot(shown, showFollowUps) : md(fallbackMarkdown);
   postToHtml({ type: 'finalize-bot', html });
   if (finalText) conversation.push({ role: 'model', content: finalText });
 

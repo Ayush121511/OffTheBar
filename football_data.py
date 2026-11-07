@@ -73,6 +73,15 @@ TABLE_SCORERS = 10
 MAX_CLUBS = 3
 MIN_SURNAME_LENGTH = 4
 POSITION_ORDER = ("Goalkeeper", "Defence", "Midfield", "Offence")
+# Older than this and a question goes to the web as usual (the job runs every 6h).
+MAX_AGE_HOURS = 12
+TABLE_QUESTION = re.compile(r"\b(?:table|standings?|stats|statistics|league position|top of the|bottom of the|who(?:'s| is) (?:top|first|bottom|leading))\b")
+FIXTURE_QUESTION = re.compile(r"\b(?:next (?:match|game|fixture|opponent)|upcoming (?:match|game|fixture)s?|fixtures?|play next|playing next)\b")
+MANAGER_QUESTION = re.compile(r"\b(?:who (?:is|are|'s)?\s*(?:the )?(?:manager|coach|head coach)|who manages|manager of|coach of|who(?:'s| is) managing)\b")
+SQUAD_QUESTION = re.compile(r"\bsquad\b")
+RESULT_QUESTION = re.compile(r"\b(?:last (?:match|game|result)|latest results?|recent results?)\b")
+# Needs news or opinion, whatever else it asks.
+NEEDS_NEWS = re.compile(r"\b(?:predict\w*|lineups?|line-ups?|team news|injur\w*|transfers?|rumou?rs?|why|fantasy|fpl|preview|key players?|who starts)\b")
 
 
 def store_location() -> str:
@@ -309,6 +318,69 @@ def _current_facts():
             except Exception as exc:
                 print(f"[OffTheBar data] couldn't read {store_location()}: {exc}")
         return _facts
+
+
+def _is_fresh(facts):
+    try:
+        updated = datetime.fromisoformat(facts.updated_at)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - updated <= timedelta(hours=MAX_AGE_HOURS)
+
+
+def _coming_matches(facts, team_id, now):
+    teams = facts.teams[team_id]
+    return [m for code in teams["competitions"] for m in facts.competitions[code].get("matches", [])
+            if team_id in (m["home_id"], m["away_id"]) and m["status"] in ("SCHEDULED", "TIMED")
+            and m["date"] >= now.strftime("%Y-%m-%dT%H:%M")]
+
+
+def can_answer(question, query=""):
+    """Whether the store alone answers this: a table, fixture, result, manager
+    or squad question about something it covers, this season. It takes both
+    the question and the rewrite, since a follow-up's club is only in the rewrite."""
+    asked = _folded(question)
+    if NEEDS_NEWS.search(asked) or any(int(year) < datetime.now(timezone.utc).year for year in re.findall(r"\b(?:19|20)\d{2}\b", asked)):
+        return False
+    facts = _current_facts()
+    if not facts or not _is_fresh(facts):
+        return False
+    text = _folded(f"{question} {query}")
+    clubs = facts.clubs_named(text)
+    if TABLE_QUESTION.search(asked):
+        return bool(clubs or facts.competitions_named(text))
+    if not clubs:
+        return False
+    if MANAGER_QUESTION.search(asked):
+        return bool(facts.teams[clubs[0]].get("coach"))
+    if SQUAD_QUESTION.search(asked):
+        return bool(facts.teams[clubs[0]].get("squad"))
+    if FIXTURE_QUESTION.search(asked):
+        return bool(_coming_matches(facts, clubs[0], datetime.now(timezone.utc)))
+    return bool(RESULT_QUESTION.search(asked))
+
+
+def table_markdown(question, query=""):
+    """A table question's league table, built here so its figures can't be
+    misquoted, or "". For a club, its league's table."""
+    if not TABLE_QUESTION.search(_folded(question)):
+        return ""
+    facts = _current_facts()
+    if not facts:
+        return ""
+    text = _folded(f"{question} {query}")
+    codes = facts.competitions_named(text)
+    if not codes:
+        clubs = facts.clubs_named(text)
+        codes = facts.teams[clubs[0]]["competitions"][:1] if clubs else []
+    if not codes:
+        return ""
+    competition = facts.competitions[codes[0]]
+    rows = "\n".join(
+        f"| {row['position']} | {row['team']} | {row['played']} | {row['won']} | {row['drawn']} | {row['lost']} | {row['goal_difference']:+d} | {row['points']} |"
+        for row in competition.get("table", [])
+    )
+    return f"**{competition['name']}**\n\n| # | Club | P | W | D | L | GD | Pts |\n|---|---|---|---|---|---|---|---|\n{rows}\n\n"
 
 
 def context_for(text):

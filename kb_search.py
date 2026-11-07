@@ -398,6 +398,9 @@ def hybrid_search(query, latest_news=False, top_k=4):
     if snapshot is not None:
         query_terms = snapshot.correct(query_terms)
     subject = snapshot.subject_terms(query_terms) if snapshot is not None else set()
+    # "United" in several clubs' names says nothing: a Manchester United piece
+    # isn't about Newcastle United.
+    subject = {term for term in subject if snapshot.tag_word_counts.get(term, 0) <= SUBJECT_MAX_TAGS} or subject
     bm25 = {}
     if snapshot is not None and query_terms:
         scores = snapshot.bm25.get_scores(list(query_terms))

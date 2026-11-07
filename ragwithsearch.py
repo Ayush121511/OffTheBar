@@ -1027,6 +1027,8 @@ KB_COVERAGE = ("full", "partial", "none")
 
 
 RUN_OF_PLAY_BLOCK = re.compile(r"(?=\[RUN OF PLAY (?:CONTEXT|ARCHIVE))")
+# A new article labeled ARCHIVE is about someone else (kb_search's on_subject).
+RECENT_ARCHIVE_LABEL = re.compile(r"\[RUN OF PLAY ARCHIVE - published [^,\]]*, (?:today|[12]?\d days? ago|30 days ago)")
 
 
 def order_context(kb_context, web_context):
@@ -1084,7 +1086,7 @@ def run_of_play_sources(kb_context, question, answer, include_archive=True):
         title_line = re.search(r"^Article: (.+)$", block, re.M)
         if not title_line or any(source["title"] == title_line.group(1).strip() for source in sources):
             continue
-        if not include_archive and block.startswith("[RUN OF PLAY ARCHIVE"):
+        if block.startswith("[RUN OF PLAY ARCHIVE") and (not include_archive or RECENT_ARCHIVE_LABEL.match(block)):
             continue
         title = title_line.group(1).strip()
         # Without the age label and the facts' section headers.

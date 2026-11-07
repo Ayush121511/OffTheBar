@@ -69,6 +69,11 @@
   .bubble :where(p,ul,ol,pre,code,h1,h2,h3),
   .content :where(p,ul,ol,pre,code,h1,h2,h3){ margin:.45em 0 }
 
+  .content table{ display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; font-size:14px; margin:.45em 0 }
+  .content th, .content td{ padding:5px 10px; border-bottom:1px solid #eaeaea; text-align:right; white-space:nowrap }
+  .content th:nth-child(2), .content td:nth-child(2){ text-align:left }
+  .content th{ font-weight:600 }
+
   .bubble code, .content code{
     font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size:.95em

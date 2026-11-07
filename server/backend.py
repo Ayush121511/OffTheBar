@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import random
 import re
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 from flask import Response, request, stream_with_context
@@ -24,6 +24,7 @@ from prompt_templates import (
     build_refinement_prompt,
 )
 import football_data
+from answer_check import checked
 from ragwithsearch import ask_from_llm, error_messages, judge_kb_coverage, order_context, run_of_play_sources
 
 # What the answer is waiting on, streamed as a "## HALFTIME!!! <status>" line
@@ -47,6 +48,8 @@ NO_NEW_UPDATES = "NO_NEW_UPDATES"   # Phase 2's "nothing to add" reply (prompt_t
 # draft built on stale material, the answer goes straight to the web search
 # and one combined answer.
 NO_RELEVANT_CONTEXT = "NO_RELEVANT_CONTEXT"
+STATUS_HEARTBEAT_SECONDS = 2
+TABLE_SHOWN = "\n\nThe full table is already on screen above your answer. Don't list it again or restate positions and points: say in two or three sentences what stands out."
 HALFTIME_LINE = re.compile(r"^##\s*HALFTIME!!!.*$", re.M)
 # Gemini 2.5 Flash thinks before its first visible word, and thinking is billed
 # as output. Phase 1 is a ~60-word draft: measured 676 thinking tokens for 66
@@ -271,6 +274,8 @@ class Backend_Api:
             used_contexts: List[str] = []
 
             def start_web_search(planned_query: str) -> None:
+                if football_data.can_answer(prompt["content"], planned_query):
+                    return
                 web_prefetch.append(WEB_PREFETCH_POOL.submit(
                     ask_from_llm, "", llm_query, "", planned_query, force_search=True
                 ))
@@ -281,6 +286,7 @@ class Backend_Api:
             search_required = False
             formatted_query = ""
             kb_coverage: Optional[str] = None
+            from_database = False
             print("Jailbreak:", jailbreak)
 
             # Earlier turns as they were, then one user turn with this
@@ -308,6 +314,12 @@ class Backend_Api:
                 """The context, after the database's facts on what the question names."""
                 facts = football_data.context_for(f"{prompt['content']} {formatted_query or ''}")
                 return "\n\n".join(part for part in (facts, material) if part)
+
+            def checked_text(pieces: Iterable[str]) -> Iterable[str]:
+                """The answer's text, sentence by sentence, against what it may draw on."""
+                earlier = " ".join(entry["content"] for entry in conversation_history)
+                allowed = " ".join([earlier, prompt["content"], *used_contexts])
+                return checked(pieces, allowed, check_names=search_required)
 
             def contents_with(instruction: str, context: Optional[str] = None) -> List[Dict[str, Any]]:
                 material = with_football_data(news_content if context is None else context)
@@ -355,20 +367,17 @@ class Backend_Api:
                         streaming=True,
                     )
 
-                    for chunk in response:
-                        try:
+                    def texts() -> Iterable[str]:
+                        for chunk in response:
                             finish_reason = _extract_finish_reason(chunk)
                             if finish_reason:
                                 print(f"Gemini finish reason (complete-context): {finish_reason}")
                             chunk_text = _extract_text(chunk)
                             if chunk_text:
-                                yield chunk_text.encode("utf-8")
-                        except GeneratorExit:
-                            break
-                        except Exception as exc:
-                            print(f"Error streaming chunk: {exc}")
-                            yield random.choice(err_msgs).encode("utf-8")
-                            break
+                                yield chunk_text
+
+                    for piece in checked_text(texts()):
+                        yield piece.encode("utf-8")
 
                 except Exception as e:
                     print(f"Error during Gemini API call: {e}")
@@ -422,7 +431,7 @@ class Backend_Api:
                             if chunk_text:
                                 yield chunk_text
 
-                    for piece in _without_sentinel(texts(), NO_NEW_UPDATES):
+                    for piece in checked_text(_without_sentinel(texts(), NO_NEW_UPDATES)):
                         yield piece.encode("utf-8")
 
                 except Exception as exc:
@@ -506,6 +515,12 @@ class Backend_Api:
                         if not stage_statuses or not (web_prefetch and web_prefetch[0].done()):
                             yield _status(STATUS_WEB)
                         if web_prefetch:
+                            # A quiet connection is what the page lost on Safari: the
+                            # status repeats so bytes keep flowing during the wait.
+                            while not web_prefetch[0].done():
+                                wait(web_prefetch, timeout=STATUS_HEARTBEAT_SECONDS)
+                                if not web_prefetch[0].done():
+                                    yield from stage_status(STATUS_WEB)
                             latest, _, _ = web_prefetch[0].result()
                         else:
                             latest, _, _ = ask_from_llm(
@@ -546,9 +561,9 @@ class Backend_Api:
                 initial_response = ""
                 nothing_relevant: List[bool] = []
                 print("=== Phase 1 starting ===")
-                for piece in _without_sentinel(
+                for piece in checked_text(_without_sentinel(
                     phase1_texts(), NO_RELEVANT_CONTEXT, found=nothing_relevant, keep_rest=False
-                ):
+                )):
                     initial_response += piece
                     yield piece.encode("utf-8")
 
@@ -613,7 +628,7 @@ class Backend_Api:
             def answer_stream() -> Iterable[bytes]:
                 """Retrieval, then the answer path it picks, with a status line
                 for each stage."""
-                nonlocal news_content, search_required, formatted_query, kb_coverage
+                nonlocal news_content, search_required, formatted_query, kb_coverage, from_database
                 try:
                     yield from stage_status(STATUS_RUN_OF_PLAY)
                     news_content, search_required, formatted_query = ask_from_llm(
@@ -626,16 +641,21 @@ class Backend_Api:
                     # the Run of Play articles hold picks the path: "full" -> answer from
                     # them alone; "partial" -> draft from them, then the web update;
                     # "none" -> no draft, one answer from the web search plus them.
-                    kb_coverage = judge_kb_coverage(prompt["content"], formatted_query, news_content) if search_required else None
+                    from_database = search_required and football_data.can_answer(prompt["content"], formatted_query)
+                    if from_database:
+                        kb_coverage = "full"
+                    else:
+                        kb_coverage = judge_kb_coverage(prompt["content"], formatted_query, news_content) if search_required else None
 
                     # === Fast path: no search needed, or the articles cover it (complete context) ===
                     if not search_required or kb_coverage == "full":
                         print("Streaming response from Gemini AI (complete context)...")
+                        table = football_data.table_markdown(prompt["content"], formatted_query) if from_database else ""
+                        if table:
+                            yield table.encode("utf-8")
                         yield from stage_status(STATUS_GENERATING)
-                        yield from stream_gemini_flash_fast(
-                            contents_with(build_complete_context_instruction()),
-                            error_messages,
-                        )
+                        instruction = build_complete_context_instruction() + (TABLE_SHOWN if table else "")
+                        yield from stream_gemini_flash_fast(contents_with(instruction), error_messages)
                         return
 
                     yield from stream_fast_gemini()
@@ -656,7 +676,7 @@ class Backend_Api:
                     if want_sources:
                         # Coverage "none" can mean nothing recent enough, so a recent
                         # report the answer used still counts; old articles don't.
-                        sources = run_of_play_sources(
+                        sources = [] if from_database else run_of_play_sources(
                             news_content, prompt["content"], "".join(response_parts),
                             include_archive=kb_coverage != "none",
                         )
